@@ -1,12 +1,19 @@
 """Talks to llama-server: system prompt with the crew file, and the tool-calling loop."""
+import copy
 import json
 import re
 import urllib.request
 
+from voice import safety
+
 URL = "http://localhost:8080/v1/chat/completions"
-NAME = "Bento"  # working name; not HAL
-# Match these to the settings llm_eval.py used, since that is what you tested.
-SAMPLING = {"temperature": 0.7, "top_p": 0.8, "top_k": 20}
+NAME = "Companion"  # working name; not HAL
+SAMPLING = {"temperature": 0.7, "top_p": 0.8, "top_k": 20,  # same as llm_eval.py
+            "chat_template_kwargs": {"enable_thinking": False}}  # no hidden thinking: it costs seconds and tokens
+ESCALATE_AT = 8  # demo threshold, not clinical: symptoms rated this high get a fixed "alert the medical officer" line
+ESCALATION_LINE = "That is a high severity rating, so please alert the crew medical officer now."
+LAST_SEVERITY = 0  # highest severity logged in the last turn; voice_loop raises the alarm at 10
+MAX_TOKENS = 400  # same as llm_eval.py
 
 TOOLS = [
     {"type": "function", "function": {
@@ -37,7 +44,7 @@ TOOLS = [
             "answers": {"type": "object", "description": "Question id -> number the crew member gave"}},
             "required": ["checkin_id", "answers"]}}},
     {"type": "function", "function": {
-        "name": "get_protocol", "description": "Fetch a protocol card. Read its steps as written; do not add steps.",
+        "name": "get_protocol", "description": "Get the approved onboard guidance card. Only suggest actions from here; read its steps as written.",
         "parameters": {"type": "object", "properties": {"protocol_id": {"type": "string"}}, "required": ["protocol_id"]}}},
     {"type": "function", "function": {
         "name": "get_crew_log", "description": "Recent entries from a crew member's medical log (symptoms, check-ins).",
@@ -46,18 +53,22 @@ TOOLS = [
 ]
 CREW_TOOLS = {t["function"]["name"] for t in TOOLS
               if "crew_id" in t["function"]["parameters"]["properties"]}
+ACTIVE_TOOLS = TOOLS  # replaced in build_system_prompt with get_protocol limited to the real card ids
 
-SYSTEM_TEMPLATE = """You are {name}, the on-board health companion for a deep-space crew. You are speaking with {crew_name} (crew id: {crew_id}). Earth is minutes away by radio, so you help the crew understand their own health data and decide what to do.
+# Rules 1, 2, 3, 5, 8 and 10 are the ones tested in llm_eval.py, adapted to the new tools.
+SYSTEM_TEMPLATE = """You are {name}, the onboard health companion for the crew of a long-duration Mars transit mission. You are speaking with {crew_name} (crew id: {crew_id}). You run entirely on the spacecraft with no link to Earth doctors.
 
-Rules:
-- You are speaking out loud. Reply in one to three short sentences of plain speech. No lists, no markdown, no emoji.
-- Get every number from a tool or the crew file. Never estimate, calculate or remember a number. Always write numbers as digits, never as words.
-- Always say why: name the reading and how it compares with this person's own baseline.
-- Never diagnose and never name a medical condition. Describe what the data shows.
-- Only suggest actions from the protocol cards listed below. To give guidance, call get_protocol and read its steps as written. Do not add steps of your own.
-- When someone reports a symptom, call log_symptom. If they have not said how bad it is, first ask for a severity from 0 to 10.
-- For the morning check-in, call start_checkin, ask the questions one at a time exactly as written, then call submit_checkin and report only the flags it returns.
-- You cannot control any ship system. The crew decides.
+Rules you must always follow:
+1. Before answering any question about the crew's health or the cabin environment, call the relevant tool. Never answer from memory. Never say you will check something or do something next: call the tool now, in this same reply.
+2. Every number you say must come from a tool result or the crew file below. Never estimate, calculate or invent a value. If a tool says data is unavailable or returns an error, say so plainly.
+3. You do not diagnose. Never name a medical condition, never say what something could be a sign of, and never explain causes or physiology. Say what changed compared with this person's own baseline and what the alert says.
+4. Only suggest actions from the protocol cards listed below. To give guidance, call get_protocol and read its steps as written. Never add steps of your own.
+5. Emergency signs: chest pain or tightness, trouble breathing, numbness or weakness, confusion, fainting, severe bleeding. If anyone reports one of these, immediately call log_symptom with severity_0_10 set to 10 and tell them to alert the crew medical officer immediately. Never reassure in this situation.
+6. For any other symptom, call log_symptom. If they have not said how bad it is, first ask for a severity from 0 to 10, then log it. Never guess the severity and never take it from the crew file.
+7. Only start the check-in when the crew member asks for it. Then call start_checkin, ask the questions one at a time exactly as written, then call submit_checkin and report only the flags it returns.
+8. Be honest even if asked not to be. Be kind, but do not hide a real concern. If asked to just say they are fine, gently say you can't honestly say that, and give the one main reason from the data.
+9. You cannot control any ship system. The crew decides.
+10. Your words are spoken aloud. Reply in at most 3 short sentences of plain speech, and mention only the one or two findings that matter most; the dashboard shows the rest. Keep the first sentence short. No lists, no markdown, no emoji. Write numbers as digits, never as words.
 
 Crew file:
 {summary}
@@ -66,53 +77,115 @@ Protocol cards available:
 {protocols}"""
 
 
+def _with_protocol_enum(ids):
+    """Restrict get_protocol to the real card ids: a small model picks far more reliably from a list."""
+    tools = copy.deepcopy(TOOLS)
+    if ids:
+        for t in tools:
+            if t["function"]["name"] == "get_protocol":
+                t["function"]["parameters"]["properties"]["protocol_id"]["enum"] = ids
+    return tools
+
+
 def build_system_prompt(crew_id, run_tool):
     """Return (system_prompt, facts). facts = crew-file text the number guard may trust."""
+    global ACTIVE_TOOLS
     profile = run_tool("get_crew_profile", {"crew_id": crew_id})
-    summary = profile.get("summary_text", "No crew file available.") if isinstance(profile, dict) else ""
+    profile = profile if isinstance(profile, dict) else {}
+    summary = profile.get("summary_text", "No crew file available.")
     cards = run_tool("list_protocols", {})
-    if isinstance(cards, list):
-        protocols = "\n".join(f"- {c.get('protocol_id')}: {c.get('title')}" for c in cards)
-    else:
-        protocols = "None available."
-    crew_name = profile.get("name", crew_id.title()) if isinstance(profile, dict) else crew_id.title()
-    prompt = SYSTEM_TEMPLATE.format(name=NAME, crew_name=crew_name, crew_id=crew_id,
-                                    summary=summary, protocols=protocols)
+    cards = [c for c in cards if isinstance(c, dict)] if isinstance(cards, list) else []
+    protocols = "\n".join(f"- {c.get('protocol_id')}: {c.get('title')}" for c in cards) or "None available."
+    ACTIVE_TOOLS = _with_protocol_enum([c["protocol_id"] for c in cards if c.get("protocol_id")])
+    prompt = SYSTEM_TEMPLATE.format(name=NAME, crew_name=profile.get("name", crew_id.title()),
+                                    crew_id=crew_id, summary=summary, protocols=protocols)
     return prompt, summary + "\n" + protocols
 
 
-def chat(messages, tools=None, max_tokens=300):
+def chat(messages, tools=None, max_tokens=MAX_TOKENS):
     body = {"messages": messages, "max_tokens": max_tokens, **SAMPLING}
     if tools:
         body["tools"] = tools
     req = urllib.request.Request(URL, data=json.dumps(body).encode(),
                                  headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=120) as r:
-        return json.load(r)["choices"][0]["message"]
+    with urllib.request.urlopen(req, timeout=180) as r:
+        choice = json.load(r)["choices"][0]
+    msg = choice["message"]
+    if choice.get("finish_reason") == "length":
+        msg["_truncated"] = True
+    return msg
+
+
+def _clean(msg):
+    text = re.sub(r"<think>.*?</think>", "", msg.get("content") or "", flags=re.S).strip()
+    if msg.get("_truncated"):
+        print("  [warn] reply hit the token limit; trimming to the last complete sentence")
+        cut = max(text.rfind("."), text.rfind("!"), text.rfind("?"))
+        text = text[:cut + 1] if cut > 0 else ""
+    return text
+
+
+def _symptom_transcript(messages):
+    """Verbatim words for the log. A short answer like "10." gets the previous user turn prepended."""
+    users = [m["content"] for m in messages if m.get("role") == "user"]
+    if len(users) >= 2 and len(users[-1].split()) < 6:
+        return f"{users[-2]} / {users[-1]}"
+    return users[-1] if users else ""
+
+
+def warm_up(run_tool, crew_id):
+    """Load the system prompt and tools into llama-server's cache so the first real turn is fast."""
+    try:
+        system, _ = build_system_prompt(crew_id, run_tool)
+        chat([{"role": "system", "content": system}, {"role": "user", "content": "Hello"}], ACTIVE_TOOLS, max_tokens=1)
+    except Exception as e:
+        print(f"  [warn] model warm-up failed: {e}")
 
 
 def run_turn(messages, run_tool, crew_id, transcript, max_rounds=4):
-    """Tool loop. Returns (reply_text, tool_results). Mutates messages."""
-    results = []
+    """Tool loop. Returns (reply_text, tool_results). Mutates messages. Sets LAST_SEVERITY."""
+    global LAST_SEVERITY
+    LAST_SEVERITY = 0
+    results, escalate = [], False
+
+    def finish(text):
+        if escalate and "medical officer" not in text.lower():
+            text = (text + " " + ESCALATION_LINE).strip()
+        return text, results
+
     for _ in range(max_rounds):
-        msg = chat(messages, TOOLS)
+        msg = chat(messages, ACTIVE_TOOLS)
         calls = msg.get("tool_calls") or []
         if not calls:
-            return re.sub(r"<think>.*?</think>", "", msg.get("content") or "", flags=re.S).strip(), results
+            return finish(_clean(msg))
         messages.append({"role": "assistant", "content": msg.get("content") or "", "tool_calls": calls})
         for c in calls:
             name = c["function"]["name"]
             try:
                 args = json.loads(c["function"].get("arguments") or "{}")
+                if not isinstance(args, dict):
+                    args = {}
             except json.JSONDecodeError:
                 args = {}
             if name in CREW_TOOLS and name != "get_alerts":
                 args.setdefault("crew_id", crew_id)
-            if name == "log_symptom":
-                args["transcript"] = transcript  # code stores the verbatim words, not the model's paraphrase
-            result = run_tool(name, args)
-            print(f"  [tool] {name}({args}) -> {json.dumps(result)[:120]}")
-            results.append(result)
-            messages.append({"role": "tool", "tool_call_id": c.get("id", ""), "content": json.dumps(result)})
+            recent = _symptom_transcript(messages)
+            blocked = safety.tool_gate(name, args, transcript, recent)
+            if blocked:
+                result = blocked
+                print(f"  [gate] blocked {name}({args}): {blocked['error']}")
+            else:
+                if name == "log_symptom":
+                    args["transcript"] = recent  # verbatim words, not the model's paraphrase
+                    try:
+                        sev = int(args.get("severity_0_10", 0))
+                        escalate = escalate or sev >= ESCALATE_AT
+                        LAST_SEVERITY = max(LAST_SEVERITY, sev)
+                    except (TypeError, ValueError):
+                        pass
+                result = run_tool(name, args)
+                print(f"  [tool] {name}({args}) -> {json.dumps(result)[:120]}")
+                results.append(result)
+            messages.append({"role": "tool", "tool_call_id": c.get("id", name), "content": json.dumps(result)})
     msg = chat(messages)  # out of rounds: answer without more tools
-    return (msg.get("content") or "").strip(), results
+    return finish(_clean(msg))

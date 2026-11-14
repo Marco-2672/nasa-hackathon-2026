@@ -6,8 +6,14 @@ Run from the repo root:  python -m voice.voice_loop
 Keys: Enter to start recording, Enter to stop. Type a crew id (alex, sam) to switch speaker. q quits.
 """
 import queue
+import re
 import threading
 import time
+import urllib.error
+import warnings
+
+warnings.filterwarnings("ignore", category=UserWarning)    # keep the terminal clean for the demo video
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 import numpy as np
 import sounddevice as sd
@@ -19,35 +25,45 @@ from voice.tools import run_tool
 
 SR_IN = 16000
 SR_OUT = 24000         # Kokoro outputs 24 kHz
-LANG = "b"             # "a" American, "b" British: match your TTS test
-VOICE = "bm_george"     # set to the voice you picked
+VOICE = "bm_george"    # the voice you picked
+LANG = VOICE[0]        # Kokoro's language code is the voice's first letter: a = American, b = British
 CREW = ["alex", "sam"]
+LEAD_IN_S = 0.1        # silence before each sentence; raise to 0.3 if the first word is still clipped
 HISTORY_TURNS = 4      # past exchanges kept; tool messages are not kept, to save context
-FALLBACK = "I can't confirm those numbers right now. Please check the dashboard."
 
 print("Loading speech models...")
 stt = WhisperModel("small.en", device="cpu", compute_type="int8", cpu_threads=8)
-tts = KPipeline(lang_code=LANG)
+tts = KPipeline(lang_code=LANG, repo_id="hexgrad/Kokoro-82M")
 
 
 class Speaker:
-    """Plays audio on a background thread, so the next sentence is synthesised while this one plays."""
+    """Plays audio on a background thread, so the next sentence is synthesised while this one plays.
+
+    One output stream stays open for the whole session and is fed silence when idle. Opening a new
+    stream per sentence (sd.play) lets the sound system put the device to sleep between sentences,
+    and waking it clips the first word."""
 
     def __init__(self):
         self.q = queue.Queue()
+        self.lead_in = np.zeros(int(SR_OUT * LEAD_IN_S), np.float32)
         threading.Thread(target=self._play, daemon=True).start()
 
     def _play(self):
-        while True:
-            audio = self.q.get()
-            sd.play(audio, SR_OUT)
-            sd.wait()
-            self.q.task_done()
+        idle = np.zeros((int(SR_OUT * 0.05), 1), np.float32)
+        with sd.OutputStream(samplerate=SR_OUT, channels=1, dtype="float32") as stream:
+            while True:
+                try:
+                    audio = self.q.get(timeout=0.05)
+                except queue.Empty:
+                    stream.write(idle)  # keep the device awake
+                    continue
+                stream.write(audio.reshape(-1, 1))
+                self.q.task_done()
 
     def say(self, text):
         for _, _, audio in tts(text, voice=VOICE):
             a = audio.cpu().numpy() if hasattr(audio, "cpu") else np.asarray(audio)
-            self.q.put(a.astype(np.float32))
+            self.q.put(np.concatenate([self.lead_in, a.astype(np.float32)]))
 
     def alarm(self):
         t = np.linspace(0, 0.25, int(SR_OUT * 0.25), endpoint=False)
@@ -83,23 +99,77 @@ def handle_emergency(crew, kind, phrase, transcript):
     print(f"\n  !!! EMERGENCY ({kind}): heard '{phrase}'. Bypassing the AI.")
     run_tool("raise_emergency", {"crew_id": crew, "trigger_phrase": phrase, "transcript": transcript})
     speaker.alarm()
-    speaker.say(f"Emergency alarm raised for {crew.title()}. The crew has been alerted.")
+    lines = [f"Emergency alarm raised for {crew.title()}. The crew has been alerted."]
     card = run_tool("get_protocol", {"protocol_id": kind})
     if isinstance(card, dict) and card.get("steps"):
-        speaker.say(card.get("title", ""))
-        for step in card["steps"]:
-            speaker.say(step)
+        lines += [card.get("title", "")] + list(card["steps"])
+    else:
+        print(f"  (no protocol card found for '{kind}')")
+    for line in filter(None, lines):
+        print(f"  Companion (fixed): {line}")
+        speaker.say(line)
+
+
+CANCEL_RE = re.compile(r"\b(stop|cancel|pause|later|interrupt|skip)\b", re.I)
+
+
+def checkin_question(state):
+    q = state["questions"][state["i"]]
+    return f"Question {state['i'] + 1} of {len(state['questions'])}. {q['text']}"
+
+
+def checkin_answer(state, text):
+    """The check-in runs in plain code: questions read exactly as written, answers parsed, then
+    submitted. The model is not involved, so it cannot invent questions or interpret answers.
+    Returns (lines_to_speak, still_active)."""
+    if CANCEL_RE.search(text):
+        return ["Check-in paused. Ask for your check-in again when you're ready."], False
+    q = state["questions"][state["i"]]
+    valid = {n for n in safety.user_numbers(text) if q["min"] <= n <= q["max"]}
+    if len(valid) != 1:
+        return [f"Please answer with one number from {q['min']} to {q['max']}."], True
+    state["answers"][q["id"]] = int(valid.pop())
+    state["i"] += 1
+    if state["i"] < len(state["questions"]):
+        return [checkin_question(state)], True
+    result = run_tool("submit_checkin", {"checkin_id": state["checkin_id"], "answers": state["answers"]})
+    if not isinstance(result, dict) or result.get("error"):
+        print(f"  [warn] submit_checkin failed: {result}")
+        return ["I couldn't save your check-in. Please let your crewmate know."], False
+    flags = [f if f.endswith(".") else f + "." for f in result.get("flags") or []]
+    return ["Thanks, that's your check-in done."] + (flags or ["Nothing stands out against your usual answers."]), False
+
+
+def say_lines(lines, tag):
+    for line in lines:
+        print(f"  Companion ({tag}): {line}")
+        speaker.say(line)
+
+
+def warm_up():
+    """First calls are slow (model loading, caches). Do them now, not in the first demo exchange."""
+    print("Warming up...")
+    # Real speech is needed to warm the transcriber (silence never reaches its decoder),
+    # so synthesise a phrase and resample it from 24 kHz to 16 kHz.
+    clips = [a.cpu().numpy() if hasattr(a, "cpu") else np.asarray(a)
+             for _, _, a in tts("Hello, how am I doing today?", voice=VOICE)]
+    speech = np.concatenate(clips).astype(np.float32)
+    speech16 = np.interp(np.arange(0, len(speech), SR_OUT / SR_IN), np.arange(len(speech)), speech).astype(np.float32)
+    segments, _ = stt.transcribe(speech16, language="en", beam_size=1, vad_filter=True)
+    list(segments)
+    llm.warm_up(run_tool, CREW[0])
 
 
 def main():
-    crew, history = CREW[0], []
+    warm_up()
+    crew, history, checkin = CREW[0], [], None
     print("Ready. Enter = start/stop recording. Type a crew id to switch speaker, q to quit.")
     while True:
         cmd = input(f"\n[{crew}] Enter to talk > ").strip().lower()
         if cmd == "q":
             break
         if cmd in CREW:
-            crew, history = cmd, []
+            crew, history, checkin = cmd, [], None
             print(f"  Now speaking as {crew}.")
             continue
 
@@ -107,13 +177,23 @@ def main():
         t0 = time.time()
         text = transcribe(audio)
         t_stt = time.time() - t0
-        print(f"  You: {text}   (speech-to-text {t_stt:.1f} s)")
         if not text:
+            print("  (Heard nothing. Press Enter, speak, then press Enter again.)")
             continue
+        print(f"  You: {text}   (speech-to-text {t_stt:.1f} s)")
 
         hit = safety.check_emergency(text)
         if hit:
+            checkin = None
             handle_emergency(crew, hit[0], hit[1], text)
+            speaker.wait()
+            continue
+
+        if checkin:
+            lines, active = checkin_answer(checkin, text)
+            checkin = checkin if active else None
+            say_lines(lines, "check-in")
+            history += [{"role": "user", "content": text}, {"role": "assistant", "content": " ".join(lines)}]
             speaker.wait()
             continue
 
@@ -122,24 +202,40 @@ def main():
                     + history[-2 * HISTORY_TURNS:]
                     + [{"role": "user", "content": text}])
         t1 = time.time()
-        reply, results = llm.run_turn(messages, run_tool, crew, text)
+        try:
+            reply, results = llm.run_turn(messages, run_tool, crew, text)
+        except (urllib.error.URLError, ConnectionError, TimeoutError) as e:
+            print(f"  [error] model server not reachable ({e}). Start it with: "
+                  "nohup ~/spaceapps/start_llm.sh > ~/spaceapps/llama.log 2>&1 &")
+            continue
         t_llm = time.time() - t1
 
-        allowed = safety.allowed_numbers(facts, text, *results)
-        spoken, t_first = [], None
-        for sentence in safety.split_sentences(reply):
-            ok, why = safety.guard_sentence(sentence, allowed)
-            if not ok:
-                print(f"  [guard] dropped: {sentence!r} ({why})")
-                continue
+        started = next((r for r in results if isinstance(r, dict) and r.get("checkin_id") and r.get("questions")), None)
+        if started:
+            checkin = {"checkin_id": started["checkin_id"], "questions": started["questions"], "i": 0, "answers": {}}
+            lines = ["Let's do your check-in. Answer each question with a number.", checkin_question(checkin)]
+            say_lines(lines, "check-in")
+            history += [{"role": "user", "content": text}, {"role": "assistant", "content": " ".join(lines)}]
+            speaker.wait()
+            continue
+
+        if llm.LAST_SEVERITY >= 10:
+            print("\n  !!! EMERGENCY (severity 10 reported to the model). Raising the alarm.")
+            run_tool("raise_emergency", {"crew_id": crew, "trigger_phrase": "severity 10 report", "transcript": text})
+            speaker.alarm()
+
+        # Trusted numbers: this turn's tool results, the crew file, the user's words, and earlier
+        # replies (they already passed the guard, so their numbers came from tool data).
+        earlier = [m["content"] for m in history if m["role"] == "assistant"]
+        allowed = safety.allowed_numbers(facts, text, *results, *earlier)
+        spoken, dropped = safety.filter_reply(reply, allowed)
+        for sentence, why in dropped:
+            print(f"  [guard] dropped: {sentence!r} ({why})")
+        t_first = None
+        for sentence in spoken:
             speaker.say(sentence)
-            spoken.append(sentence)
             if t_first is None:
                 t_first = time.time() - t0
-        if not spoken:
-            speaker.say(FALLBACK)
-            spoken = [FALLBACK]
-            t_first = time.time() - t0
 
         print(f"  Companion: {' '.join(spoken)}")
         print(f"  timings: speech-to-text {t_stt:.1f} s | model {t_llm:.1f} s | "
