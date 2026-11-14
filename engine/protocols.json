@@ -1,0 +1,25 @@
+[
+  {
+    "protocol_id": "fatigue_recovery",
+    "title": "PLACEHOLDER: fatigue recovery",
+    "steps": [
+      "PLACEHOLDER step 1",
+      "PLACEHOLDER step 2"
+    ],
+    "escalate_if": [
+      "PLACEHOLDER"
+    ],
+    "source": "PLACEHOLDER: published source this text comes from"
+  },
+  {
+    "protocol_id": "radiation_shelter",
+    "title": "PLACEHOLDER: radiation shelter",
+    "steps": [
+      "PLACEHOLDER step 1"
+    ],
+    "escalate_if": [
+      "PLACEHOLDER"
+    ],
+    "source": "PLACEHOLDER"
+  }
+]
