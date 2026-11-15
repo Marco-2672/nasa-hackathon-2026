@@ -93,6 +93,11 @@ def set_state(state):
     run_tool("set_status", {"state": state})
 
 
+def demo_reset_at():
+    res = run_tool("get_demo_reset", {})
+    return res.get("at") if isinstance(res, dict) else None
+
+
 def talk_request():
     res = run_tool("take_talk_request", {})
     return res.get("request", "") if isinstance(res, dict) else ""
@@ -140,20 +145,28 @@ def transcribe(audio):
     return " ".join(s.text.strip() for s in segments).strip()
 
 
-def handle_emergency(crew, kind, phrase, transcript):
-    """Plain code only: no language model on this path."""
-    print(f"\n  !!! EMERGENCY ({kind}): heard '{phrase}'. Bypassing the AI.")
-    card_id = safety.protocol_for(kind)
-    run_tool("raise_emergency", {"crew_id": crew, "trigger_phrase": phrase, "transcript": transcript,
-                                 "protocol_id": card_id})
-    speaker.alarm()
-    lines = [f"Emergency alarm raised for {crew.title()}. The crew has been alerted."]
+def card_lines(card_id):
     card = run_tool("get_protocol", {"protocol_id": card_id})
     if isinstance(card, dict) and card.get("steps"):
-        lines += [card.get("title", "")] + list(card["steps"])
-    else:
-        print(f"  (no protocol card found for '{card_id}')")
-    say_lines([line for line in lines if line], "emergency", crew)
+        return [card.get("title", "")] + list(card["steps"])
+    print(f"  (no protocol card found for '{card_id}')")
+    return []
+
+
+def handle_emergency(crew, kind, phrase, transcript):
+    """Plain code only: no language model on this path. Returns the lines spoken.
+    The alarm is raised for the crew member it's about: "Sam has collapsed" raises it for Sam."""
+    print(f"\n  !!! EMERGENCY ({kind}): heard '{phrase}'. Bypassing the AI.")
+    card_id = safety.protocol_for(kind)
+    patient = safety.mentioned_crew(transcript, CREW, crew)
+    run_tool("raise_emergency", {"crew_id": patient, "trigger_phrase": phrase, "transcript": transcript,
+                                 "protocol_id": card_id})
+    speaker.alarm()
+    lines = [f"Emergency alarm raised for {patient.title()}. The crew has been alerted."] + card_lines(card_id)
+    lines = [line for line in lines if line]
+    session["last_card"] = card_id
+    say_lines(lines, "emergency", crew)
+    return lines
 
 
 CANCEL_RE = re.compile(r"\b(stop|cancel|pause|later|interrupt|skip)\b", re.I)
@@ -238,6 +251,8 @@ def fixed_alert_lines(groups):
             lines.append(f"{_who(items)}, priority alert. {msg}")
             ids = items[0].get("protocol_ids") or []
             card = run_tool("get_protocol", {"protocol_id": ids[0]}) if ids else None
+            if ids:
+                session["last_card"] = ids[0]  # "repeat the steps" reads this card in full
             if isinstance(card, dict) and card.get("steps"):
                 lines += list(card["steps"])[:RED_CARD_STEPS]
         else:
@@ -336,8 +351,15 @@ def take_turn(crew, checkin):
 
     hit = safety.check_emergency(text)
     if hit:
-        handle_emergency(crew, hit[0], hit[1], text)
+        lines = handle_emergency(crew, hit[0], hit[1], text)
+        history += [{"role": "user", "content": text}, {"role": "assistant", "content": " ".join(lines)}]
         return None
+
+    if safety.REPEAT_RE.search(text) and session.get("last_card") and not checkin:
+        lines = ["Here are the steps again."] + card_lines(session["last_card"])
+        say_lines([line for line in lines if line], "repeat", crew)
+        history += [{"role": "user", "content": text}, {"role": "assistant", "content": " ".join(lines)}]
+        return checkin
 
     if checkin:
         lines, active = checkin_answer(checkin, text)
@@ -368,8 +390,10 @@ def take_turn(crew, checkin):
 
     if llm.LAST_SEVERITY >= 10:
         print("\n  !!! EMERGENCY (severity 10 reported to the model). Raising the alarm.")
-        run_tool("raise_emergency", {"crew_id": crew, "trigger_phrase": "severity 10 report", "transcript": text,
+        run_tool("raise_emergency", {"crew_id": safety.mentioned_crew(text, CREW, crew),
+                                     "trigger_phrase": "severity 10 report", "transcript": text,
                                      "protocol_id": safety.DEFAULT_EMERGENCY_CARD})
+        session["last_card"] = safety.DEFAULT_EMERGENCY_CARD
         speaker.alarm()
 
     # Trusted numbers: this turn's tool results, the crew file, the user's words, and earlier
@@ -400,6 +424,7 @@ def main():
     seen = {}
     new_alert_groups(seen)  # alerts that already exist at startup count as known
     threading.Thread(target=alert_watcher, args=(seen,), daemon=True).start()
+    last_reset = demo_reset_at()
     set_state("ready")
     print("Ready. Enter (or the dashboard's Talk button) = start/stop recording. "
           "Type a crew id to switch speaker, q to quit.")
@@ -419,8 +444,14 @@ def main():
                 announcements.clear()
             if cmd == "q":
                 break
+            if demo_reset_at() != last_reset:  # Reset demo was pressed: start the retake with a clean memory
+                last_reset = demo_reset_at()
+                session["history"], session["last_card"], checkin = [], None, None
+                with announce_lock:
+                    announcements.clear()
+                print("  (Demo was reset: conversation memory cleared.)")
             if cmd in CREW:
-                session["crew"], session["history"], checkin = cmd, [], None
+                session["crew"], session["history"], session["last_card"], checkin = cmd, [], None, None
                 print(f"  Now speaking as {cmd}.")
                 continue
             checkin = take_turn(crew, checkin)

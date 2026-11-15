@@ -230,6 +230,53 @@ def card_ids_spoken_as_names():
     return ok, out
 
 
+def emergency_keywords_route_to_right_card():
+    cases = {"My crewmate Sam has lost consciousness and it seems like an emergency. They are convulsing "
+             "and have no pulse.": "unresponsive",
+             "He passed out after chest pain.": "unresponsive", "Sam isn't breathing!": "unresponsive",
+             "I'm not breathing well.": "breathing_difficulty", "My chest hurts.": "chest_pain",
+             "I think I broke my wrist.": "injury", "Mayday, mayday.": "general",
+             # must NOT fire: the model has to handle these
+             "I feel really confused and my arm feels weak.": None, "Let's review the emergency procedure.": None,
+             "I've had a headache for an hour, about a 3 out of 10.": None}
+    bad = []
+    for text, want in cases.items():
+        hit = safety.check_emergency(text)
+        if (hit[0] if hit else None) != want:
+            bad.append(f"{text!r}: got {hit}, want {want}")
+    return not bad, "; ".join(bad)
+
+
+def emergency_for_crewmate_then_repeat():
+    """Alex reports Sam collapsing: alarm for Sam with the CPR card; "repeat those steps" reads it again."""
+    reseed()
+    said = iter(["My crewmate Sam has lost consciousness. They are convulsing and have no pulse.",
+                 "Could you repeat some of those steps please?"])
+    real = vl.record_ptt, vl.transcribe
+    vl.record_ptt, vl.transcribe = (lambda: np.zeros(10, np.float32)), (lambda audio: next(said))
+    vl.session.update({"crew": "alex", "history": [], "last_card": None})
+    try:
+        vl.take_turn("alex", None)
+        vl.take_turn("alex", None)
+    finally:
+        vl.record_ptt, vl.transcribe = real
+    red_sam = [a for a in run_tool("get_alerts", {"crew_id": "sam"})["alerts"]
+               if a["level"] == "red" and "unresponsive" in (a.get("protocol_ids") or [])]
+    lines = [l["text"] for l in run_tool("get_conversation", {"limit": 40})["lines"]]
+    first_step = api.get_protocol("unresponsive")["steps"][0]
+    ok = (bool(red_sam) and "Emergency alarm raised for Sam. The crew has been alerted." in lines
+          and "Here are the steps again." in lines and lines.count(first_step) == 2
+          and len(vl.session["history"]) == 4)
+    reseed()
+    return ok, f"red alert for sam={bool(red_sam)}, lines={lines[-4:]}"
+
+
+def reset_clears_voice_memory():
+    before = vl.demo_reset_at()
+    api.reset_demo()
+    return vl.demo_reset_at() != before, f"before={before}, after={vl.demo_reset_at()}"
+
+
 def comms_and_status_logged():
     vl.say_lines(["Test line for the dashboard."], "briefing", "alex")
     vl.set_state("thinking")
@@ -261,6 +308,8 @@ CHECKS = [
     ("engine", clock_jump_consistent), ("engine", demo_reset_restores_state),
     ("voice", solar_event_reannounced_after_reset), ("engine", live_faults_alert_and_reset),
     ("voice", comms_and_status_logged), ("voice", severity_not_asked_twice), ("voice", card_ids_spoken_as_names),
+    ("voice", emergency_keywords_route_to_right_card), ("voice", emergency_for_crewmate_then_repeat),
+    ("engine", reset_clears_voice_memory),
     ("content", protocol_cards_ready),
 ]
 

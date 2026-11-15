@@ -6,17 +6,22 @@ import re
 # False alarms are accepted on purpose (e.g. "I don't have chest pain" will fire):
 # for a safety alarm, a false positive is the right failure.
 # Keep the ids in line with the protocol_ids in protocols.json.
+# Checked in this order, most urgent card first: "he passed out after chest pain" gets the unresponsive card.
 EMERGENCY_PATTERNS = {
-    "chest_pain": [r"chest (pain|hurts|is hurting|feels tight|tightness|pressure)",
-                   r"pain in (my|the|his|her) chest"],
-    "breathing_difficulty": [r"(can'?t|cannot|can not) breathe", r"(trouble|difficulty|hard) breathing",
-                             r"short(ness)? of breath", r"\bchoking\b"],
-    "stroke_signs": [r"\bnumb(ness)?\b", r"(can'?t|cannot) feel my", r"face (is )?droop", r"\bslurr"],
     "unresponsive": [r"(passed|passing) out", r"\bfainted\b", r"\bunconscious\b", r"not responding",
-                     r"\bseizure\b", r"(going to|gonna|about to) (pass out|faint|black out)", r"blacking out"],
+                     r"\b(lost|losing|lose) consciousness\b", r"\bno pulse\b", r"\bconvuls", r"\bseiz(ure|ing)\b",
+                     r"\bhaving a fit\b", r"(won'?t|doesn'?t|can'?t|isn'?t|not) (wake|waking) up",
+                     r"(stopped|isn'?t|is not|not) breathing\b(?! (well|properly|right|normally|easily))",
+                     r"(going to|gonna|about to) (pass out|faint|black out)", r"blacking out"],
+    "breathing_difficulty": [r"(can'?t|cannot|can not) breathe", r"(trouble|difficulty|hard) breathing",
+                             r"short(ness)? of breath", r"\bchoking\b",
+                             r"not breathing (well|properly|right|normally|easily)"],
+    "chest_pain": [r"chest (pain|hurts|is hurting|feels tight|tightness|pressure)",
+                   r"pain in (my|the|his|her|their) chest"],
     "severe_bleeding": [r"bleeding (a lot|heavily|badly|everywhere|out)", r"(heavy|severe) bleeding",
                         r"(lot of|losing|lost) (a lot of )?blood"],
-    "injury": [r"\bbrok(e|en) (my |his |her )?(leg|arm|wrist|ankle|bone|neck|back|ribs?)\b"],
+    "stroke_signs": [r"\bnumb(ness)?\b", r"(can'?t|cannot) feel my", r"face (is )?droop", r"\bslurr"],
+    "injury": [r"\bbrok(e|en) (my |his |her |their )?(leg|arm|wrist|ankle|bone|neck|back|ribs?)\b"],
     "general": [r"\bmayday\b", r"\bemergency\b(?! (protocol|procedure|kit|plan|drill|checklist))",
                 r"\balert (the )?crew\b"],
 }
@@ -39,6 +44,19 @@ def check_emergency(text):
             if m:
                 return kind, m.group(0)
     return None
+
+
+# "Repeat those steps": code reads the last card again word for word instead of asking the model.
+REPEAT_RE = re.compile(
+    r"\brepeat (that|those|it|them|the (steps|instructions|card|protocol)|(some|all|any) of (those|the|them)( steps)?)"
+    r"|\bsay (that|it|those|them) again\b|\b(what|which) were (the|those) (steps|instructions)\b"
+    r"|\b(read|go over|go through) (the|those) (steps|instructions) again\b", re.I)
+
+
+def mentioned_crew(text, crew_ids, speaker):
+    """The crew member an emergency is about: another crew member named in the words, else the speaker."""
+    named = [c for c in crew_ids if c != speaker and re.search(rf"\b{re.escape(c)}\b", text, re.I)]
+    return named[0] if named else speaker
 
 
 # Number guard: every number the companion speaks must appear in tool data,

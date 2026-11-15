@@ -143,12 +143,18 @@ def _clean(msg):
 
 
 def _symptom_transcript(messages):
-    """Verbatim words for the log. A short answer like "10." gets the previous user turn prepended."""
-    users = [m["content"] for m in messages  # skip notes from code, e.g. "(Ship alert system ...)"
-             if m.get("role") == "user" and not m["content"].startswith("(")]
-    if len(users) >= 2 and len(users[-1].split()) < 6:
-        return f"{users[-2]} / {users[-1]}"
-    return users[-1] if users else ""
+    """Verbatim words for the log. A short answer ("10.") or the answer to "how bad is it?" gets the
+    previous crew turn prepended, so the log keeps what the symptom was."""
+    crew_turns = [i for i, m in enumerate(messages)  # skip notes from code, e.g. "(Ship alert system ...)"
+                  if m.get("role") == "user" and not m["content"].startswith("(")]
+    if not crew_turns:
+        return ""
+    last = messages[crew_turns[-1]]["content"]
+    before = messages[crew_turns[-1] - 1] if crew_turns[-1] > 0 else {}
+    asked = before.get("role") == "assistant" and safety.ASKS_SEVERITY_RE.search(before.get("content") or "")
+    if len(crew_turns) >= 2 and (len(last.split()) < 6 or asked):
+        return f"{messages[crew_turns[-2]]['content']} / {last}"
+    return last
 
 
 def warm_up(run_tool, crew_id):

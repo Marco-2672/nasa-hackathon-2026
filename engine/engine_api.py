@@ -584,6 +584,8 @@ def reset_demo() -> dict:
         for table in ("symptoms", "checkins", "emergencies", "alerts", "injected", "conversation"):
             con.execute(f"DELETE FROM {table}")
         con.execute("DELETE FROM meta WHERE key='ptt'")
+        # tells the voice loop to forget the conversation too, so a retake starts clean
+        con.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('demo_reset', ?)", (str(_time.time()),))
         seed_logs(con)
         con.commit()
         con.close()
@@ -769,6 +771,14 @@ def request_talk(action: str) -> dict:
     try:
         _set_meta("ptt", action)
         return {"ok": True}
+    except Exception as e:
+        return _err(e)
+
+
+def get_demo_reset() -> dict:
+    # when Reset demo was last pressed (0 = never); the voice loop clears its memory when this changes
+    try:
+        return {"at": float(_get_meta("demo_reset") or 0)}
     except Exception as e:
         return _err(e)
 

@@ -104,3 +104,5 @@ Conventions:
 - `set_status(state)`, `heartbeat()`, `get_status()`: Bento's state (ready, listening, thinking, speaking) and whether the voice loop is running.
 - `request_talk("start" | "stop")`, `take_talk_request()`: the dashboard's Talk button.
 - `get_series(crew_id, metric, hours)`, `get_co2_series(hours)`: chart data up to the mission clock, faults applied.
+- `get_demo_reset()`: `{"at": <time Reset demo was last pressed>}`. The voice loop clears its conversation memory when it changes.
+- `raise_emergency` is now raised for the crew member named in the words ("Sam has passed out" raises it for `sam`), not always the speaker.
