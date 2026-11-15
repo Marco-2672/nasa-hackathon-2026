@@ -177,6 +177,11 @@ def _seed_static(con: sqlite3.Connection) -> None:
         ],
     )
 
+    seed_logs(con)
+
+
+def seed_logs(con: sqlite3.Connection) -> None:
+    # the seeded crew-log rows; also used by engine_api.reset_demo() between demo takes
     # seeded symptom: must match tool_examples.get_crew_log entry 0
     con.execute(
         "INSERT INTO symptoms (log_id, crew_id, mission_day, time, minutes, description, severity, transcript) "

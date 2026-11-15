@@ -7,7 +7,7 @@ import urllib.request
 from voice import safety
 
 URL = "http://localhost:8080/v1/chat/completions"
-NAME = "Companion"  # working name; not HAL
+NAME = "Bento"  # matches the dashboard; change here to rename the companion
 SAMPLING = {"temperature": 0.7, "top_p": 0.8, "top_k": 20,  # same as llm_eval.py
             "chat_template_kwargs": {"enable_thinking": False}}  # no hidden thinking: it costs seconds and tokens
 ESCALATE_AT = 8  # demo threshold, not clinical: symptoms rated this high get a fixed "alert the medical officer" line

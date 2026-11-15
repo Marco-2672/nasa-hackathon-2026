@@ -160,6 +160,34 @@ def clock_jump_consistent():
     return not stale, f"after set_clock(48): get_alerts still returns day-47 alerts {stale}, crew file says '{profile_alerts}'"
 
 
+def demo_reset_restores_state():
+    api.log_symptom("alex", "headache", 4, "take 1")
+    st = api.start_checkin("alex"); api.submit_checkin(st["checkin_id"], {"fatigue_sp": 6})
+    api.raise_emergency("alex", "test", "take 1"); api.trigger_event("solar_particle_event")
+    api.reset_demo()
+    log = run_tool("get_crew_log", {"crew_id": "alex"})["entries"]
+    alerts = run_tool("get_alerts", {})["alerts"]
+    clock = run_tool("get_vitals", {"crew_id": "alex"})
+    ok = (len(log) == 2 and log[0]["text"] == "mild headache" and log[1]["summary"] == "Fatigue 5 of 7, baseline 3"
+          and not [a for a in alerts if a["level"] == "red"] and len(alerts) == 3
+          and (clock["mission_day"], clock["time"]) == (47, "07:30"))
+    return ok, f"after reset_demo: log={log}, alerts={[a['code'] for a in alerts]}, clock={clock.get('mission_day')} {clock.get('time')}"
+
+
+def solar_event_reannounced_after_reset():
+    seen = {}
+    vl.new_alert_lines(seen)
+    api.trigger_event("solar_particle_event")
+    first, _ = vl.new_alert_lines(seen)
+    api.reset_demo()
+    vl.new_alert_lines(seen)
+    api.trigger_event("solar_particle_event")
+    second, red = vl.new_alert_lines(seen)
+    amber_repeat, _ = (api.reset_demo(), vl.new_alert_lines(seen))[1]
+    return bool(first) and bool(second) and red and not amber_repeat, \
+        f"take 1 announced={bool(first)}, take 2 announced={bool(second)}, amber alerts repeated={amber_repeat}"
+
+
 def protocol_cards_ready():
     cards = {p["protocol_id"] for p in run_tool("list_protocols", {})}
     needed = {safety.protocol_for(k) for k in safety.EMERGENCY_PATTERNS} | {"radiation_shelter"}
@@ -176,7 +204,8 @@ CHECKS = [
     ("engine", checkin_questions_are_questions), ("engine", worst_answers_get_flagged),
     ("engine", flags_backed_by_data), ("engine", emergency_survives_engine_rerun),
     ("engine", emergency_has_right_protocol), ("engine", solar_event_is_an_alert),
-    ("engine", clock_jump_consistent), ("content", protocol_cards_ready),
+    ("engine", clock_jump_consistent), ("engine", demo_reset_restores_state),
+    ("voice", solar_event_reannounced_after_reset), ("content", protocol_cards_ready),
 ]
 
 

@@ -110,15 +110,8 @@ def crew_log_df(crew_id: str) -> pd.DataFrame:
 
 
 def clear_demo_state() -> None:
-    # reset clock to day 47 07:30, delete all alerts and emergencies
-    con = connect()
-    try:
-        con.execute("DELETE FROM alerts")
-        con.execute("DELETE FROM emergencies")
-        con.commit()
-    finally:
-        con.close()
-    api.set_clock(47, "07:30")
+    # back to the seeded day-47 07:30 state: alerts, emergencies, symptoms and check-ins from the take are cleared
+    api.reset_demo()
 
 
 # --- sidebar ----

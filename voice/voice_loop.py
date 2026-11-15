@@ -29,8 +29,8 @@ VOICE = "bm_george"    # the voice you picked
 LANG = VOICE[0]        # Kokoro's language code is the voice's first letter: a = American, b = British
 CREW = ["alex", "sam"]
 LEAD_IN_S = 0.1        # silence before each sentence; raise to 0.3 if the first word is still clipped
-HISTORY_TURNS = 4
-ALERT_POLL_S = 3       # how often to look for new engine alerts while waiting at the prompt      # past exchanges kept; tool messages are not kept, to save context
+HISTORY_TURNS = 4      # past exchanges kept; tool messages are not kept, to save context
+ALERT_POLL_S = 3       # how often to look for new engine alerts while waiting at the prompt
 
 print("Loading speech models...")
 stt = WhisperModel("small.en", device="cpu", compute_type="int8", cpu_threads=8)
@@ -166,8 +166,11 @@ def new_alert_lines(seen):
     res = run_tool("get_alerts", {})
     if not isinstance(res, dict) or "alerts" not in res:
         return [], False
+    current = {_alert_key(a): a.get("level") for a in res["alerts"]}
+    for key in [k for k, level in seen.items() if level == "red" and k not in current]:
+        del seen[key]  # a red alert that has cleared (e.g. demo reset) can be announced again
     fresh = [a for a in res["alerts"] if a.get("code") != "EMERGENCY" and _alert_key(a) not in seen]
-    seen.update(_alert_key(a) for a in fresh)
+    seen.update({_alert_key(a): a.get("level") for a in fresh})
     groups = {}
     for a in fresh:  # a crew-wide event arrives as one alert per crew member: announce it once
         groups.setdefault((a.get("level"), a.get("code"), a.get("message", "")), []).append(a)
@@ -221,7 +224,7 @@ def warm_up():
 def main():
     warm_up()
     crew, history, checkin = CREW[0], [], None
-    seen = set()
+    seen = {}
     new_alert_lines(seen)  # alerts that already exist at startup count as known
     threading.Thread(target=alert_watcher, args=(seen,), daemon=True).start()
     print("Ready. Enter = start/stop recording. Type a crew id to switch speaker, q to quit.")

@@ -563,6 +563,23 @@ def set_clock(mission_day: int, time: str) -> dict:
         return _err(e)
 
 
+def reset_demo() -> dict:
+    # demo control: back to the seeded state between takes, without rebuilding the database file
+    # (other processes keep working): clears everything written during a take, restores the seeded
+    # crew log, resets the clock to day 47 07:30 and recalculates alerts
+    try:
+        from .sim import seed_logs
+        con = connect(DEFAULT_DB)
+        for table in ("symptoms", "checkins", "emergencies", "alerts"):
+            con.execute(f"DELETE FROM {table}")
+        seed_logs(con)
+        con.commit()
+        con.close()
+        return set_clock(47, "07:30")
+    except Exception as e:
+        return _err(e)
+
+
 def trigger_event(name: str) -> dict:
     # demo control: force a scheduled event to be active now by jumping the clock
     try:
