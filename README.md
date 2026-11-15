@@ -151,5 +151,6 @@ check_integration.py, check_live.py   test suites
 
 ## Team
 
-- **Marco:** AI and voice: local model, speech, conversation logic, safety filters, live tests.
-- **`<partner>`:** deterministic engine, simulator, database and dashboard.
+- **Marco:** AI and voice: local model, speech, conversation logic, safety filters, live tests, dashboard.
+- **Hannah:** deterministic engine, simulator, database and dashboard.
+- **Ines:** Actress in the demo.
