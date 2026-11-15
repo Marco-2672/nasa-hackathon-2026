@@ -104,6 +104,7 @@ def get_vitals(crew_id: str, hours: int = 24) -> dict:
                 "unit": base_row["unit"],
                 "latest": round_spoken(m, latest),
                 "baseline": round_spoken(m, baseline),
+                "change": round_spoken(m, latest - baseline),  # the model never has to subtract
                 "change_pct": change_pct(latest, baseline),
                 "trend_3d": trend_3d(latest, prior),
                 "status": status_for(m, latest, baseline),

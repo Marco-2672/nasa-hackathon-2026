@@ -17,11 +17,11 @@ Conventions:
 ```json
 {"crew_id": "alex", "mission_day": 47, "time": "07:30",
  "metrics": [
-  {"metric": "resting_heart_rate", "unit": "bpm", "latest": 68, "baseline": 58, "change_pct": 17, "trend_3d": "rising", "status": "amber"},
-  {"metric": "sleep", "unit": "hours", "latest": 5.1, "baseline": 7.2, "change_pct": -29, "trend_3d": "falling", "status": "amber"},
-  {"metric": "spo2", "unit": "%", "latest": 97, "baseline": 98, "change_pct": -1, "trend_3d": "stable", "status": "green"},
-  {"metric": "o2_consumption_rest", "unit": "mL/min", "latest": 260, "baseline": 250, "change_pct": 4, "trend_3d": "stable", "status": "green"},
-  {"metric": "exercise", "unit": "minutes/day", "latest": 0, "baseline": 90, "change_pct": -100, "trend_3d": "falling", "status": "amber"}
+  {"metric": "resting_heart_rate", "unit": "bpm", "latest": 68, "baseline": 58, "change": 10, "change_pct": 17, "trend_3d": "rising", "status": "amber"},
+  {"metric": "sleep", "unit": "hours", "latest": 5.1, "baseline": 7.2, "change": -2.1, "change_pct": -29, "trend_3d": "falling", "status": "amber"},
+  {"metric": "spo2", "unit": "%", "latest": 97, "baseline": 98, "change": -1, "change_pct": -1, "trend_3d": "stable", "status": "green"},
+  {"metric": "o2_consumption_rest", "unit": "mL/min", "latest": 260, "baseline": 250, "change": 10, "change_pct": 4, "trend_3d": "stable", "status": "green"},
+  {"metric": "exercise", "unit": "minutes/day", "latest": 0, "baseline": 90, "change": -90, "change_pct": -100, "trend_3d": "falling", "status": "amber"}
  ]}
 ```
 

@@ -99,11 +99,19 @@ SPECULATION_RE = re.compile(
     r"diagnos\w*|syndrome|intracranial|infection|disease|disorder|concussion|heart attack|stroke)\b", re.I)
 
 
+# Promises to do something later ("I need to check your vitals") are dropped: the tool loop has already
+# finished, so the promise would never be kept.
+PROMISE_RE = re.compile(r"\b(let me|let's|let us|i'll|i will|i need to|i should) (check|look|pull|review|get|see)\b", re.I)
+
+
 def filter_reply(reply, allowed):
     """Check every sentence. Returns (sentences_to_speak, [(dropped_sentence, reason)]).
     If a number was dropped, say so honestly instead of leaving a curt fragment."""
     keep, dropped, number_dropped = [], [], False
     for s in split_sentences(reply):
+        if PROMISE_RE.search(s):
+            dropped.append((s, "promise to check later"))
+            continue
         spec = SPECULATION_RE.search(s)
         if spec:
             dropped.append((s, f"speculation: '{spec.group(0)}'"))
