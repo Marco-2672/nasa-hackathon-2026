@@ -121,7 +121,9 @@ def filter_reply(reply, allowed):
             keep.append(s)
         else:
             dropped.append((s, why))
-            number_dropped = True
+            # only a figure written in digits that isn't in the data earns the "couldn't verify" note;
+            # a sentence dropped for a number written as a word ("all three") just goes quietly
+            number_dropped = number_dropped or "tool data" in why
     if number_dropped:
         keep.append(VERIFY_NOTE if keep else FALLBACK)
     elif not keep:
