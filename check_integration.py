@@ -162,7 +162,7 @@ def clock_jump_consistent():
 
 def protocol_cards_ready():
     cards = {p["protocol_id"] for p in run_tool("list_protocols", {})}
-    needed = set(safety.EMERGENCY_PATTERNS) | {"radiation_shelter"}
+    needed = {safety.protocol_for(k) for k in safety.EMERGENCY_PATTERNS} | {"radiation_shelter"}
     for a in run_tool("get_alerts", {})["alerts"]:
         needed |= set(a["protocol_ids"])
     missing = sorted(needed - cards)

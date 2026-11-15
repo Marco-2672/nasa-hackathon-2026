@@ -1,25 +1,155 @@
 [
   {
-    "protocol_id": "fatigue_recovery",
-    "title": "PLACEHOLDER: fatigue recovery",
+    "protocol_id": "radiation_shelter",
+    "title": "Radiation shelter for a solar particle event",
     "steps": [
-      "PLACEHOLDER step 1",
-      "PLACEHOLDER step 2"
+      "Stop your current task and secure loose items.",
+      "Move to the designated shelter area in the centre of the cabin.",
+      "Empty the nearby stowage bays and pack the bags, food and water along the least shielded wall, to put more mass between you and the particles.",
+      "Aim to have the shelter built within 1 hour of the alert.",
+      "Stay inside until the radiation alert clears. This can take up to 24 hours.",
+      "Keep wearing your personal dosimeter and check its readings."
     ],
     "escalate_if": [
-      "PLACEHOLDER"
+      "The dose rate keeps rising after the shelter is built.",
+      "A crew member feels unwell while sheltering: alert the crew medical officer."
     ],
-    "source": "PLACEHOLDER: published source this text comes from"
+    "source": "Demonstration content, not medical advice. NASA, Scientists and Engineers Evaluate Orion Radiation Protection Plan, https://www.nasa.gov/missions/artemis/orion/scientists-and-engineers-evaluate-orion-radiation-protection-plan/ ; NASA Science, To Protect Artemis II Astronauts, NASA Experts Keep Eyes on Sun, https://science.nasa.gov/missions/artemis/artemis-2/to-protect-artemis-ii-astronauts-nasa-experts-keep-eyes-on-sun/"
   },
   {
-    "protocol_id": "radiation_shelter",
-    "title": "PLACEHOLDER: radiation shelter",
+    "protocol_id": "fatigue_recovery",
+    "title": "Fatigue recovery",
     "steps": [
-      "PLACEHOLDER step 1"
+      "Protect your next scheduled sleep period, and keep to a regular sleep and wake time.",
+      "Before sleep, switch to the dim, warm pre-sleep lighting and avoid bright screens.",
+      "After waking, use bright light to help you become alert.",
+      "Do critical tasks more slowly, follow the checklist step by step, and ask a crewmate to cross-check your work.",
+      "Tell the crew medical officer if the fatigue does not improve."
     ],
     "escalate_if": [
-      "PLACEHOLDER"
+      "Fatigue continues after protected sleep.",
+      "You make a fatigue-related mistake on a critical task."
     ],
-    "source": "PLACEHOLDER"
+    "source": "Demonstration content, not medical advice. NASA NTRS, Scheuring, Moomaw and Johnston, Fatigue in U.S. Astronauts Onboard the ISS, https://ntrs.nasa.gov/api/citations/20150009487/downloads/20150009487.pdf ; NASA NTRS, Subjective Sleep Experience During Shuttle Missions, https://ntrs.nasa.gov/api/citations/20120007773/downloads/20120007773.pdf ; NASA Ames Fatigue Countermeasures Laboratory, https://humansystems.arc.nasa.gov/groups/fatigue/"
+  },
+  {
+    "protocol_id": "chest_pain",
+    "title": "Chest pain",
+    "steps": [
+      "Stop all activity and stay still. Anchor yourself, or have a crewmate hold you in place.",
+      "Alert the crew medical officer now.",
+      "Loosen anything tight around the neck and waist.",
+      "The crew medical officer opens the onboard medical checklist and decides on any medication.",
+      "Bring the defibrillator, and be ready to start chest compressions if the person stops responding.",
+      "Send a report to the flight surgeon. Replies from Earth take minutes, so do not wait before acting.",
+      "Treat chest pain that does not go away as an emergency."
+    ],
+    "escalate_if": [
+      "The person stops responding or stops breathing normally: use the unresponsive card.",
+      "The pain spreads to the arms, neck, jaw or back, or comes with breathlessness or sweating."
+    ],
+    "source": "Demonstration content, not medical advice. NHS, Chest pain, https://www.nhs.uk/conditions/chest-pain/ ; British Red Cross, Heart attack first aid, https://www.redcross.org.uk/first-aid/learn-first-aid/heart-attack ; NASA NTRS, ISS medical kit and crew medical officer role, https://ntrs.nasa.gov/api/citations/20110010924/downloads/20110010924.pdf"
+  },
+  {
+    "protocol_id": "breathing_difficulty",
+    "title": "Breathing difficulty",
+    "steps": [
+      "If more than one person is affected, or you smell smoke or chemicals, treat it as a cabin atmosphere emergency: put on a breathing mask now and sound the alarm.",
+      "Alert the crew medical officer.",
+      "Keep the person still and calm.",
+      "The crew medical officer follows the onboard medical checklist and can give oxygen from the medical kit.",
+      "Send a report to the flight surgeon."
+    ],
+    "escalate_if": [
+      "The person stops breathing normally or stops responding: use the unresponsive card.",
+      "Other crew start to feel unwell: treat it as a cabin atmosphere emergency."
+    ],
+    "source": "Demonstration content, not medical advice. NASA NTRS, Emergency Operations History, ISS (rapid depressurization, fire, toxic atmosphere, medical), https://ntrs.nasa.gov/api/citations/20220019247/downloads/Emergency%20Ops%20History%20for%20SpaceOps%20Conference%202023.pdf ; NASA NTRS, ISS Fire Detection and Suppression incl. Portable Breathing Apparatus, https://ntrs.nasa.gov/api/citations/20030053429/downloads/20030053429.pdf ; NASA NTRS, ISS medical kit (oxygen supplementation), https://ntrs.nasa.gov/api/citations/20110010924/downloads/20110010924.pdf"
+  },
+  {
+    "protocol_id": "stroke_signs",
+    "title": "FAST check: face, arms, speech",
+    "steps": [
+      "Face: has one side of the face fallen? Can they smile?",
+      "Arms: can they raise both arms and keep them there?",
+      "Speech: is their speech slurred or confused?",
+      "If you see any one of these signs, alert the crew medical officer now.",
+      "Note the time the signs started.",
+      "Report the signs even if they go away.",
+      "Send the FAST findings to the flight surgeon."
+    ],
+    "escalate_if": [
+      "The person stops responding: use the unresponsive card.",
+      "A sudden, severe headache."
+    ],
+    "source": "Demonstration content, not medical advice. NHS, Act FAST, https://www.nhs.uk/actFAST ; British Heart Foundation, Stroke, https://www.bhf.org.uk/informationsupport/conditions/stroke ; adapted for spaceflight: the crew medical officer replaces calling 999"
+  },
+  {
+    "protocol_id": "unresponsive",
+    "title": "Unresponsive crew member",
+    "steps": [
+      "Check for a response and for normal breathing.",
+      "Sound the alarm and alert the crew medical officer.",
+      "If they are not breathing normally, start chest compressions now using the Evetts-Russomano method, bracing yourself against their body.",
+      "Bring the defibrillator and use it as soon as it is ready.",
+      "When help arrives, strap the person to the crew medical restraint system and continue compressions using the handstand method.",
+      "Swap rescuers often. Compressions in weightlessness are tiring.",
+      "Send a report to the flight surgeon."
+    ],
+    "escalate_if": [
+      "Normal breathing does not return: keep going until the crew medical officer says to stop."
+    ],
+    "source": "Demonstration content, not medical advice. Hinkelbein et al. 2020, Cardiopulmonary resuscitation during spaceflight: a guideline for CPR in microgravity (DGLRM and ESAM-SMG), https://doi.org/10.1186/s13049-020-00793-y ; NASA NTRS, CPR in microgravity and the Crew Medical Restraint System, https://ntrs.nasa.gov/api/citations/20150020975/downloads/20150020975.pdf"
+  },
+  {
+    "protocol_id": "severe_bleeding",
+    "title": "Severe bleeding",
+    "steps": [
+      "Put on gloves and press firmly and directly on the wound with a dressing.",
+      "Keep the pressure on.",
+      "Alert the crew medical officer.",
+      "Restrain the injured person so you can keep steady pressure.",
+      "In weightlessness, blood forms droplets that drift. Keep them away from the eyes, nose and mouth, and catch them with absorbent material.",
+      "Send a report to the flight surgeon."
+    ],
+    "escalate_if": [
+      "The bleeding does not slow with firm pressure.",
+      "The person stops responding: use the unresponsive card."
+    ],
+    "source": "Demonstration content, not medical advice. NASA NTRS, Extraterrestrial Hemorrhage Control (direct pressure on all compressible bleeding), https://ntrs.nasa.gov/archive/nasa/casi.ntrs.nasa.gov/20110011168.pdf ; Scientific American, fluid-filled domes for bleeding in deep-space flight (blood droplets in microgravity), https://www.scientificamerican.com/article/during-medical-emergencies-on-deep-space-flights-fluid-filled-domes-could-stanch-bleeding/"
+  },
+  {
+    "protocol_id": "injury",
+    "title": "Suspected broken bone",
+    "steps": [
+      "Stop the activity and keep the injured part still.",
+      "Restrain the injured person so they do not drift.",
+      "Alert the crew medical officer.",
+      "The crew medical officer immobilises the injury using the onboard medical kit and checklist.",
+      "If there is bleeding, also use the severe bleeding card.",
+      "Send a report to the flight surgeon, with photos or ultrasound images if possible."
+    ],
+    "escalate_if": [
+      "Bleeding that does not stop: use the severe bleeding card.",
+      "The person stops responding: use the unresponsive card."
+    ],
+    "source": "Demonstration content, not medical advice. NASA NTRS, ISS medical kit and crew medical officer role, https://ntrs.nasa.gov/api/citations/20110010924/downloads/20110010924.pdf ; Healthcare IT News, how ISS telemedicine sends images and ultrasound to flight surgeons, https://www.healthcareitnews.com/news/international-space-station-teaches-healthcare-about-telemedicine"
+  },
+  {
+    "protocol_id": "general",
+    "title": "Medical emergency",
+    "steps": [
+      "Sound the alarm and alert the crew medical officer.",
+      "Make the area safe: secure loose equipment and restrain the person so they do not drift.",
+      "Stay with them and keep them calm.",
+      "The crew medical officer opens the onboard medical checklist.",
+      "Send a report to the flight surgeon. On a Mars mission replies take minutes, so act on the checklist without waiting."
+    ],
+    "escalate_if": [
+      "Not breathing normally: use the unresponsive card.",
+      "Heavy bleeding: use the severe bleeding card.",
+      "Chest pain: use the chest pain card."
+    ],
+    "source": "Demonstration content, not medical advice. NASA NTRS, ISS emergency response training (crews must act without mission control), https://ntrs.nasa.gov/api/citations/20120002562/downloads/20120002562.pdf ; NASA NTRS, ISS medical kit and crew medical officer role, https://ntrs.nasa.gov/api/citations/20110010924/downloads/20110010924.pdf"
   }
 ]

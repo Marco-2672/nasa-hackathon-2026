@@ -29,7 +29,8 @@ VOICE = "bm_george"    # the voice you picked
 LANG = VOICE[0]        # Kokoro's language code is the voice's first letter: a = American, b = British
 CREW = ["alex", "sam"]
 LEAD_IN_S = 0.1        # silence before each sentence; raise to 0.3 if the first word is still clipped
-HISTORY_TURNS = 4      # past exchanges kept; tool messages are not kept, to save context
+HISTORY_TURNS = 4
+ALERT_POLL_S = 3       # how often to look for new engine alerts while waiting at the prompt      # past exchanges kept; tool messages are not kept, to save context
 
 print("Loading speech models...")
 stt = WhisperModel("small.en", device="cpu", compute_type="int8", cpu_threads=8)
@@ -97,15 +98,16 @@ def transcribe(audio):
 def handle_emergency(crew, kind, phrase, transcript):
     """Plain code only: no language model on this path."""
     print(f"\n  !!! EMERGENCY ({kind}): heard '{phrase}'. Bypassing the AI.")
+    card_id = safety.protocol_for(kind)
     run_tool("raise_emergency", {"crew_id": crew, "trigger_phrase": phrase, "transcript": transcript,
-                                 "protocol_id": kind})  # ignored until the engine accepts it
+                                 "protocol_id": card_id})
     speaker.alarm()
     lines = [f"Emergency alarm raised for {crew.title()}. The crew has been alerted."]
-    card = run_tool("get_protocol", {"protocol_id": kind})
+    card = run_tool("get_protocol", {"protocol_id": card_id})
     if isinstance(card, dict) and card.get("steps"):
         lines += [card.get("title", "")] + list(card["steps"])
     else:
-        print(f"  (no protocol card found for '{kind}')")
+        print(f"  (no protocol card found for '{card_id}')")
     for line in filter(None, lines):
         print(f"  Companion (fixed): {line}")
         speaker.say(line)
@@ -147,6 +149,61 @@ def say_lines(lines, tag):
         speaker.say(line)
 
 
+# ---------------------------------------------------------------- speak first on new alerts
+idle = threading.Event()          # set only while waiting at the prompt, so alerts never interrupt a turn
+announce_lock = threading.Lock()
+announcements = []                # alerts spoken since the last turn, added to the conversation history
+prompt_text = [""]
+
+
+def _alert_key(a):
+    # crew + code + day, not alert_id: ids are renumbered whenever the engine recalculates
+    return a.get("crew_id"), a.get("code"), str(a.get("alert_id", "")).split("-")[0]
+
+
+def new_alert_lines(seen):
+    """Lines to speak for alerts not seen before, plus whether any is red. Plain code, no model."""
+    res = run_tool("get_alerts", {})
+    if not isinstance(res, dict) or "alerts" not in res:
+        return [], False
+    fresh = [a for a in res["alerts"] if a.get("code") != "EMERGENCY" and _alert_key(a) not in seen]
+    seen.update(_alert_key(a) for a in fresh)
+    groups = {}
+    for a in fresh:  # a crew-wide event arrives as one alert per crew member: announce it once
+        groups.setdefault((a.get("level"), a.get("code"), a.get("message", "")), []).append(a)
+    lines, red = [], False
+    for (level, code, message), items in groups.items():
+        who = "All crew" if len(items) > 1 else str(items[0].get("crew_id", "")).title()
+        msg = message if message.endswith(".") else message + "."
+        if level == "red":
+            red = True
+            lines.append(f"{who}, priority alert. {msg}")
+            ids = items[0].get("protocol_ids") or []
+            card = run_tool("get_protocol", {"protocol_id": ids[0]}) if ids else None
+            if isinstance(card, dict) and card.get("steps"):
+                lines += [card.get("title", "")] + list(card["steps"])
+        else:
+            lines.append(f"{who}, a new health alert. {msg} Ask me if you want to talk it through.")
+    return [line for line in lines if line], red
+
+
+def alert_watcher(seen):
+    while True:
+        time.sleep(ALERT_POLL_S)
+        if not idle.is_set():
+            continue
+        lines, red = new_alert_lines(seen)
+        if not lines:
+            continue
+        print()
+        if red:
+            speaker.alarm()
+        say_lines(lines, "alert")
+        with announce_lock:
+            announcements.append(" ".join(lines))
+        print(prompt_text[0].lstrip("\n"), end="", flush=True)
+
+
 def warm_up():
     """First calls are slow (model loading, caches). Do them now, not in the first demo exchange."""
     print("Warming up...")
@@ -164,9 +221,21 @@ def warm_up():
 def main():
     warm_up()
     crew, history, checkin = CREW[0], [], None
+    seen = set()
+    new_alert_lines(seen)  # alerts that already exist at startup count as known
+    threading.Thread(target=alert_watcher, args=(seen,), daemon=True).start()
     print("Ready. Enter = start/stop recording. Type a crew id to switch speaker, q to quit.")
     while True:
-        cmd = input(f"\n[{crew}] Enter to talk > ").strip().lower()
+        prompt_text[0] = f"\n[{crew}] Enter to talk > "
+        idle.set()
+        cmd = input(prompt_text[0]).strip().lower()
+        idle.clear()
+        speaker.wait()  # let an alert finish before recording, so the mic doesn't pick it up
+        with announce_lock:  # the model should know what was just announced
+            for a in announcements:
+                history += [{"role": "user", "content": "(The ship's alert system has just announced something.)"},
+                            {"role": "assistant", "content": a}]
+            announcements.clear()
         if cmd == "q":
             break
         if cmd in CREW:
@@ -223,7 +292,7 @@ def main():
         if llm.LAST_SEVERITY >= 10:
             print("\n  !!! EMERGENCY (severity 10 reported to the model). Raising the alarm.")
             run_tool("raise_emergency", {"crew_id": crew, "trigger_phrase": "severity 10 report", "transcript": text,
-                                         "protocol_id": "general"})
+                                         "protocol_id": safety.DEFAULT_EMERGENCY_CARD})
             speaker.alarm()
 
         # Trusted numbers: this turn's tool results, the crew file, the user's words, and earlier

@@ -22,6 +22,14 @@ EMERGENCY_PATTERNS = {
 }
 
 
+# Emergency type -> protocol card: every emergency type has its own card, named after it.
+DEFAULT_EMERGENCY_CARD = "general"
+
+
+def protocol_for(kind):
+    return kind if kind in EMERGENCY_PATTERNS else DEFAULT_EMERGENCY_CARD
+
+
 def check_emergency(text):
     """Return (protocol_id, matched_phrase) or None."""
     t = text.lower().replace("’", "'")
