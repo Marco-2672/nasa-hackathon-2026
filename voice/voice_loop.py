@@ -97,7 +97,8 @@ def transcribe(audio):
 def handle_emergency(crew, kind, phrase, transcript):
     """Plain code only: no language model on this path."""
     print(f"\n  !!! EMERGENCY ({kind}): heard '{phrase}'. Bypassing the AI.")
-    run_tool("raise_emergency", {"crew_id": crew, "trigger_phrase": phrase, "transcript": transcript})
+    run_tool("raise_emergency", {"crew_id": crew, "trigger_phrase": phrase, "transcript": transcript,
+                                 "protocol_id": kind})  # ignored until the engine accepts it
     speaker.alarm()
     lines = [f"Emergency alarm raised for {crew.title()}. The crew has been alerted."]
     card = run_tool("get_protocol", {"protocol_id": kind})
@@ -221,7 +222,8 @@ def main():
 
         if llm.LAST_SEVERITY >= 10:
             print("\n  !!! EMERGENCY (severity 10 reported to the model). Raising the alarm.")
-            run_tool("raise_emergency", {"crew_id": crew, "trigger_phrase": "severity 10 report", "transcript": text})
+            run_tool("raise_emergency", {"crew_id": crew, "trigger_phrase": "severity 10 report", "transcript": text,
+                                         "protocol_id": "general"})
             speaker.alarm()
 
         # Trusted numbers: this turn's tool results, the crew file, the user's words, and earlier
