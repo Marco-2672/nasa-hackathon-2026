@@ -1,5 +1,5 @@
 # bento dashboard; run from repo root: streamlit run dashboard/app.py
-# reads through engine_api so numbers match marco's voice loop exactly
+# reads through engine_api
 # live panel auto-refreshes every 2s; sidebar buttons fire demo events
 
 from __future__ import annotations
