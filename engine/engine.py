@@ -112,10 +112,16 @@ def derive_alerts(db_path: Path = DEFAULT_DB) -> int:
             print("error: no clock_minutes in meta; run python -m engine.sim first")
             return 0
         today = clock // 1440
-        con.execute("DELETE FROM alerts WHERE created_day = ?", (today,))
+        # keep emergencies: they come from the crew, not from readings
+        con.execute("DELETE FROM alerts WHERE created_day = ? AND code != 'EMERGENCY'", (today,))
+        active_events = [p for p in (json.loads(r["payload_json"])
+                                     for r in con.execute("SELECT payload_json FROM scheduled_events"))
+                         if p["active_from_minutes"] <= clock < p["active_to_minutes"]]
         idx = 0
         for crew_id in ("alex", "sam"):
-            for a in _alerts_for_crew(con, crew_id, today):
+            event_alerts = [{"level": p["level"], "code": p["code"], "message": p["message"],
+                             "since_mission_day": today, "protocol_ids": p["protocol_ids"]} for p in active_events]
+            for a in _alerts_for_crew(con, crew_id, today) + event_alerts:
                 idx += 1
                 con.execute(
                     "INSERT INTO alerts (alert_id, crew_id, level, code, message, "

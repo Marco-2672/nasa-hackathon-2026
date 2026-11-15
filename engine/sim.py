@@ -46,7 +46,11 @@ BASELINES = {
         "spo2":                (98,  "%"),
         "o2_consumption_rest": (250, "mL/min"),
         "exercise":            (90,  "minutes/day"),
+        "sleep_quality":       (4,   "score"),
+        "sleepiness_kss":      (3,   "score"),
         "fatigue_sp":          (3,   "score"),
+        "mood":                (4,   "score"),
+        "stress":              (2,   "score"),
     },
     "sam": {
         "resting_heart_rate":  (55,  "bpm"),
@@ -54,6 +58,11 @@ BASELINES = {
         "spo2":                (98,  "%"),
         "o2_consumption_rest": (235, "mL/min"),
         "exercise":            (80,  "minutes/day"),
+        "sleep_quality":       (4,   "score"),
+        "sleepiness_kss":      (3,   "score"),
+        "fatigue_sp":          (2,   "score"),
+        "mood":                (4,   "score"),
+        "stress":              (2,   "score"),
     },
 }
 

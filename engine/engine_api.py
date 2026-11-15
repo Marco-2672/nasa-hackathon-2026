@@ -9,6 +9,7 @@ import json
 import statistics
 from pathlib import Path
 
+from .engine import derive_alerts
 from .metrics import change_pct, round_spoken, status_for, trend_3d
 from .schema import DEFAULT_DB, connect, init_db
 
@@ -174,6 +175,10 @@ def get_alerts(crew_id: str | None = None, active_only: bool = True) -> dict:
         sql = "SELECT * FROM alerts"
         params: list = []
         where: list[str] = []
+        clock = _clock(con)
+        if clock is not None:  # only today's alerts, so a clock jump never shows stale ones
+            where.append("created_day = ?")
+            params.append(clock["mission_day"])
         if crew_id is not None:
             where.append("crew_id = ?")
             params.append(crew_id)
@@ -227,8 +232,8 @@ def log_symptom(crew_id: str, description: str, severity_0_10: int, transcript: 
 
 CHECKIN_QUESTIONS = [
     {"id": "sleep_quality", "text": "How well did you sleep, from 1, very badly, to 5, very well?", "min": 1, "max": 5},
-    {"id": "sleepiness_kss", "text": "Karolinska Sleepiness Scale: 1 is extremely alert, 9 is very sleepy and fighting to stay awake.", "min": 1, "max": 9},
-    {"id": "fatigue_sp", "text": "Samn-Perelli fatigue: 1 is fully alert, 7 is completely exhausted.", "min": 1, "max": 7},
+    {"id": "sleepiness_kss", "text": "How sleepy do you feel right now, from 1, extremely alert, to 9, very sleepy and fighting to stay awake?", "min": 1, "max": 9},
+    {"id": "fatigue_sp", "text": "How tired do you feel right now, from 1, fully alert, to 7, completely exhausted?", "min": 1, "max": 7},
     {"id": "mood", "text": "How is your mood, from 1, very low, to 5, very good?", "min": 1, "max": 5},
     {"id": "stress", "text": "How stressed do you feel, from 1, not at all, to 5, extremely?", "min": 1, "max": 5},
 ]
@@ -281,8 +286,8 @@ def submit_checkin(checkin_id: str, answers: dict) -> dict:
                     "id": qid, "value": v, "baseline": int(base),
                     "flag": "higher than usual" if higher_is_worse else "lower than usual",
                 })
-                flags.append(_flag_text(qid, v, base, crew_id, con))
-        summary = _summary_text(answers)
+                flags.append(_flag_text(qid, v, base, crew_id, con, row["mission_day"]))
+        summary = _summary_text(answers, con, crew_id)
         con.execute(
             "UPDATE checkins SET answers_json=?, summary=?, completed=1 WHERE checkin_id=?",
             (json.dumps(answers), summary, checkin_id),
@@ -293,23 +298,33 @@ def submit_checkin(checkin_id: str, answers: dict) -> dict:
         return _err(e)
 
 
-def _flag_text(qid: str, value: int, baseline: float, crew_id: str, con) -> str:
-    # human-readable flag, notes "2 days running" only if yesterday flagged too
+def _flag_text(qid: str, value: int, baseline: float, crew_id: str, con, today: int) -> str:
+    # human-readable flag; "N days running" only when stored check-ins on the days before back it up
     label = {"fatigue_sp": "Fatigue", "sleepiness_kss": "Sleepiness",
              "stress": "Stress", "mood": "Mood", "sleep_quality": "Sleep quality"}[qid]
-    direction = "above" if qid in ("fatigue_sp", "sleepiness_kss", "stress") else "below"
-    text = f"{label} {direction} personal baseline"
-    if qid == "fatigue_sp":
-        text += " 2 days running"  # matches tool_examples, demo path assumes yesterday's was flagged too
+    higher_is_worse = qid in ("fatigue_sp", "sleepiness_kss", "stress")
+    text = f"{label} {'above' if higher_is_worse else 'below'} personal baseline"
+    run, expected = 1, today - 1
+    for r in con.execute("SELECT mission_day, answers_json FROM checkins WHERE crew_id=? AND completed=1 "
+                         "AND mission_day<? ORDER BY mission_day DESC", (crew_id, today)):
+        v = json.loads(r["answers_json"]).get(qid)
+        if r["mission_day"] != expected or v is None:
+            break
+        if not ((v >= baseline + 1) if higher_is_worse else (v <= baseline - 1)):
+            break
+        run, expected = run + 1, expected - 1
+    if run >= 2:
+        text += f" {run} days running"
     return text
 
 
-def _summary_text(answers: dict) -> str:
-    # compact line for the crew log, only mentions fatigue (matches tool_examples)
+def _summary_text(answers: dict, con, crew_id: str) -> str:
+    # compact line for the crew log, mentions fatigue against this person's own baseline
     f = answers.get("fatigue_sp")
     if f is None:
         return "Check-in submitted"
-    return f"Fatigue {f} of 7, baseline 3"
+    b = _baseline(con, crew_id, "fatigue_sp")
+    return f"Fatigue {f} of 7" + (f", baseline {int(b['value'])}" if b else "")
 
 
 def get_protocol(protocol_id: str) -> dict:
@@ -457,10 +472,11 @@ def _alert_description(code: str, since_day: int) -> str:
         "SLEEP_SHORT": f"short sleep since day {since_day}",
         "EXERCISE_MISSED": f"missed exercise since day {since_day}",
         "EMERGENCY": "emergency logged",
+        "SPE_SHELTER": "solar particle event, shelter protocol",
     }.get(code, code.lower().replace("_", " "))
 
 
-def raise_emergency(crew_id: str, trigger_phrase: str, transcript: str) -> dict:
+def raise_emergency(crew_id: str, trigger_phrase: str, transcript: str, protocol_id: str = "general") -> dict:
     # write red alert + emergency log, called from phrase check
     try:
         con = connect(DEFAULT_DB)
@@ -487,7 +503,7 @@ def raise_emergency(crew_id: str, trigger_phrase: str, transcript: str) -> dict:
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (alert_id, crew_id, "red", "EMERGENCY",
              f"Emergency: {trigger_phrase}", clock["mission_day"], clock["mission_day"],
-             json.dumps(["chest_pain"]), None),
+             json.dumps([protocol_id]), None),
         )
         con.commit()
         return {"ok": True, "alarm_id": alarm_id}
@@ -541,6 +557,7 @@ def set_clock(mission_day: int, time: str) -> dict:
         con.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('clock_minutes', ?)",
                     (str(minutes),))
         con.commit()
+        derive_alerts(DEFAULT_DB)  # alerts always match the clock after a jump
         return {"ok": True, "mission_day": int(mission_day), "time": time}
     except Exception as e:
         return _err(e)
