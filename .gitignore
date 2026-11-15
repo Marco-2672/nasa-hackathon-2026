@@ -2,3 +2,7 @@ data/*.db*
 .venv/
 __pycache__/
 *.wav
+
+# personal files never belong in this repo
+*.pdf
+icf_papers/

@@ -103,17 +103,24 @@ def talk_request():
     return res.get("request", "") if isinstance(res, dict) else ""
 
 
+def heartbeat_loop():
+    """Tells the dashboard Bento is running, every 3 s, even in the middle of a long reply.
+    (Sending it only while waiting at the prompt made the dashboard show OFFLINE during long answers.)"""
+    while True:
+        try:
+            run_tool("heartbeat", {})
+        except Exception:
+            pass
+        time.sleep(3)
+
+
 def wait_for_command(prompt):
     """Wait for a typed line, or for the dashboard's Talk button (returns "" = start talking)."""
     print(prompt, end="", flush=True)
-    last_beat = 0.0
     while True:
         ready, _, _ = select.select([sys.stdin], [], [], 0.2)
         if ready:
             return sys.stdin.readline().strip().lower()
-        if time.time() - last_beat > 3:
-            run_tool("heartbeat", {})
-            last_beat = time.time()
         if talk_request() == "start":
             print("(Talk button)")
             return ""
@@ -424,6 +431,7 @@ def main():
     seen = {}
     new_alert_groups(seen)  # alerts that already exist at startup count as known
     threading.Thread(target=alert_watcher, args=(seen,), daemon=True).start()
+    threading.Thread(target=heartbeat_loop, daemon=True).start()
     last_reset = demo_reset_at()
     set_state("ready")
     print("Ready. Enter (or the dashboard's Talk button) = start/stop recording. "

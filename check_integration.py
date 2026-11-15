@@ -277,6 +277,16 @@ def reset_clears_voice_memory():
     return vl.demo_reset_at() != before, f"before={before}, after={vl.demo_reset_at()}"
 
 
+def online_during_long_reply():
+    """The dashboard must not show OFFLINE while Bento is busy with a long reply (no prompt, no heartbeat)."""
+    import threading, time as t
+    threading.Thread(target=vl.heartbeat_loop, daemon=True).start()
+    api._set_meta("bento_heartbeat", "0")  # pretend the last heartbeat was long ago
+    t.sleep(1)
+    status = run_tool("get_status", {})
+    return status.get("online") is True, f"status={status}"
+
+
 def comms_and_status_logged():
     vl.say_lines(["Test line for the dashboard."], "briefing", "alex")
     vl.set_state("thinking")
@@ -309,7 +319,7 @@ CHECKS = [
     ("voice", solar_event_reannounced_after_reset), ("engine", live_faults_alert_and_reset),
     ("voice", comms_and_status_logged), ("voice", severity_not_asked_twice), ("voice", card_ids_spoken_as_names),
     ("voice", emergency_keywords_route_to_right_card), ("voice", emergency_for_crewmate_then_repeat),
-    ("engine", reset_clears_voice_memory),
+    ("engine", reset_clears_voice_memory), ("voice", online_during_long_reply),
     ("content", protocol_cards_ready),
 ]
 
