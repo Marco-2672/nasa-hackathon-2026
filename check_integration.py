@@ -203,6 +203,33 @@ def live_faults_alert_and_reset():
     return ok, f"cabin={env['cabin']}, co2 alerts={len(co2)}, sam spo2={sp}, crew file has CO2={'CO2' in crew_file}, reset clean={clean}"
 
 
+def severity_not_asked_twice():
+    """Scripted model that asks for a severity the crew member already gave: code must remind it once."""
+    reseed()
+    script = [{"content": "I'll log your headache. What is the severity on a scale of 0 to 10?"},
+              {"content": "", "tool_calls": [{"id": "1", "function": {"name": "log_symptom", "arguments":
+                  '{"crew_id": "alex", "description": "headache", "severity_0_10": 3}'}}]},
+              {"content": "I've logged your headache at 3."}]
+    real_chat, llm.chat = llm.chat, lambda messages, tools=None, max_tokens=None: script.pop(0)
+    try:
+        _, _ = llm.build_system_prompt("alex", run_tool)
+        msgs = [{"role": "user", "content": "I've had a headache for an hour, about a 3 out of 10."}]
+        reply, results = llm.run_turn(msgs, run_tool, "alex", msgs[0]["content"])
+    finally:
+        llm.chat = real_chat
+    logged = [e for e in run_tool("get_crew_log", {"crew_id": "alex", "days": 1}).get("entries", [])
+              if e.get("type") == "symptom" and e.get("mission_day") == 47 and "headache" in str(e.get("text"))]
+    reseed()
+    return bool(logged) and not script, f"reply={reply!r}, logged={logged}"
+
+
+def card_ids_spoken_as_names():
+    llm.build_system_prompt("alex", run_tool)
+    out = llm.speakable("Follow the co2high card, then the radiation_shelter and `breathing_difficulty` cards.")
+    ok = "_" not in out and "co2high" not in out.lower() and "radiation shelter" in out and "breathing difficulty" in out
+    return ok, out
+
+
 def comms_and_status_logged():
     vl.say_lines(["Test line for the dashboard."], "briefing", "alex")
     vl.set_state("thinking")
@@ -233,7 +260,8 @@ CHECKS = [
     ("engine", emergency_has_right_protocol), ("engine", solar_event_is_an_alert),
     ("engine", clock_jump_consistent), ("engine", demo_reset_restores_state),
     ("voice", solar_event_reannounced_after_reset), ("engine", live_faults_alert_and_reset),
-    ("voice", comms_and_status_logged), ("content", protocol_cards_ready),
+    ("voice", comms_and_status_logged), ("voice", severity_not_asked_twice), ("voice", card_ids_spoken_as_names),
+    ("content", protocol_cards_ready),
 ]
 
 

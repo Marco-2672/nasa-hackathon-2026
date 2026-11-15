@@ -97,6 +97,8 @@ def build_system_prompt(crew_id, run_tool):
     cards = [c for c in cards if isinstance(c, dict)] if isinstance(cards, list) else []
     protocols = "\n".join(f"- {c.get('protocol_id')}: {c.get('title')}" for c in cards) or "None available."
     ACTIVE_TOOLS = _with_protocol_enum([c["protocol_id"] for c in cards if c.get("protocol_id")])
+    CARD_NAMES.update({c["protocol_id"]: SPOKEN_CARD.get(c["protocol_id"], c["protocol_id"].replace("_", " "))
+                       for c in cards if c.get("protocol_id")})
     prompt = SYSTEM_TEMPLATE.format(name=NAME, crew_name=profile.get("name", crew_id.title()),
                                     crew_id=crew_id, summary=summary, protocols=protocols)
     return prompt, summary + "\n" + protocols
@@ -116,8 +118,23 @@ def chat(messages, tools=None, max_tokens=MAX_TOKENS):
     return msg
 
 
+# Card ids said aloud sound wrong ("the co2high card"), so code swaps them for plain names.
+CARD_NAMES = {}  # protocol_id -> spoken name, filled by build_system_prompt
+SPOKEN_CARD = {"co2_high": "high CO2", "general": "medical emergency"}
+
+
+def speakable(text):
+    for pid, name in CARD_NAMES.items():
+        parts = pid.split("_")
+        if len(parts) > 1:  # one-word ids ("injury") are already plain words
+            pattern = r"[`*]*\b" + r"[_-]?".join(map(re.escape, parts)) + r"\b[`*]*"
+            text = re.sub(pattern, name, text, flags=re.I)
+    return text
+
+
 def _clean(msg):
     text = re.sub(r"<think>.*?</think>", "", msg.get("content") or "", flags=re.S).strip()
+    text = speakable(text)
     if msg.get("_truncated"):
         print("  [warn] reply hit the token limit; trimming to the last complete sentence")
         cut = max(text.rfind("."), text.rfind("!"), text.rfind("?"))
@@ -127,7 +144,8 @@ def _clean(msg):
 
 def _symptom_transcript(messages):
     """Verbatim words for the log. A short answer like "10." gets the previous user turn prepended."""
-    users = [m["content"] for m in messages if m.get("role") == "user"]
+    users = [m["content"] for m in messages  # skip notes from code, e.g. "(Ship alert system ...)"
+             if m.get("role") == "user" and not m["content"].startswith("(")]
     if len(users) >= 2 and len(users[-1].split()) < 6:
         return f"{users[-2]} / {users[-1]}"
     return users[-1] if users else ""
@@ -146,7 +164,8 @@ def run_turn(messages, run_tool, crew_id, transcript, max_rounds=4):
     """Tool loop. Returns (reply_text, tool_results). Mutates messages. Sets LAST_SEVERITY."""
     global LAST_SEVERITY
     LAST_SEVERITY = 0
-    results, escalate = [], False
+    results, escalate, reminded, logged = [], False, False, False
+    stated = safety.stated_severity(transcript)
 
     def finish(text):
         if escalate and "medical officer" not in text.lower():
@@ -157,7 +176,17 @@ def run_turn(messages, run_tool, crew_id, transcript, max_rounds=4):
         msg = chat(messages, ACTIVE_TOOLS)
         calls = msg.get("tool_calls") or []
         if not calls:
-            return finish(_clean(msg))
+            text = _clean(msg)
+            if stated is not None and not logged and not reminded and safety.ASKS_SEVERITY_RE.search(text):
+                # The crew member already said how bad it is, but the model asked again. Remind it once.
+                reminded = True
+                print(f"  [remind] severity {stated} was already given; asking the model to log it")
+                messages += [{"role": "assistant", "content": text},
+                             {"role": "user", "content": f"(Note from the ship's software, not the crew: they already "
+                              f"gave a severity of {stated} in their last message. Call log_symptom now with "
+                              f"severity_0_10 = {stated}, then answer them. Do not ask for the severity again.)"}]
+                continue
+            return finish(text)
         messages.append({"role": "assistant", "content": msg.get("content") or "", "tool_calls": calls})
         for c in calls:
             name = c["function"]["name"]
@@ -176,6 +205,7 @@ def run_turn(messages, run_tool, crew_id, transcript, max_rounds=4):
                 print(f"  [gate] blocked {name}({args}): {blocked['error']}")
             else:
                 if name == "log_symptom":
+                    logged = True
                     args["transcript"] = recent  # verbatim words, not the model's paraphrase
                     try:
                         sev = int(args.get("severity_0_10", 0))

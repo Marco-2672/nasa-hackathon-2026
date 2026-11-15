@@ -258,6 +258,7 @@ def ai_briefing(groups, crew, history):
     note = (f"(Ship alert system, not the crew speaking.) New alert: {alert_text}. "
             "Without being asked, brief the crew in at most 3 short sentences: check the related readings with your "
             "tools, say what changed against baseline or limits, and name the protocol card to follow. "
+            "Only mention readings that relate to this alert. "
             "Do not repeat the alert word for word and do not log symptoms.")
     system, facts = llm.build_system_prompt(target, run_tool)
     messages = [{"role": "system", "content": system}] + history[-2 * HISTORY_TURNS:] + [{"role": "user", "content": note}]

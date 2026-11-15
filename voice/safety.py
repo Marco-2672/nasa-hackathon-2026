@@ -137,6 +137,26 @@ WORD_NUMBERS = {"zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
                 "seven": 7, "eight": 8, "nine": 9, "ten": 10}
 CHECKIN_RE = re.compile(r"check[\s-]?in", re.I)
 
+# A severity the crew member has already given ("about a 3", "3 out of 10"). Used to stop the model asking
+# again: if it does, run_turn reminds it once and it logs the symptom instead.
+_SEV = rf"(\d{{1,2}}|{'|'.join(WORD_NUMBERS)})"
+STATED_SEVERITY_RE = re.compile(
+    rf"\b{_SEV}\s*(?:out of|/)\s*(?:10|ten)\b"
+    rf"|^\s*{_SEV}\s*[.!]?\s*$"  # a bare answer to "how bad is it?"
+    rf"|\b(?:about|around|roughly|maybe|probably|like|rate it|rated|severity(?: of| is)?|it's|it is)\s+(?:a\s+|an\s+)?{_SEV}\b"
+    r"(?!\s*(?:hours?|hrs?|minutes?|mins?|days?|times?|am|pm|o'clock|%|percent|mmhg|bpm))", re.I)
+ASKS_SEVERITY_RE = re.compile(r"\b(severity|0 to 10|zero to ten|scale of|how bad)\b", re.I)
+
+
+def stated_severity(text):
+    """The 0-10 rating in the crew member's own words, or None."""
+    for m in STATED_SEVERITY_RE.finditer(text or ""):
+        raw = next(g for g in m.groups() if g)
+        n = int(raw) if raw.isdigit() else WORD_NUMBERS[raw.lower()]
+        if 0 <= n <= 10:
+            return n
+    return None
+
 
 def user_numbers(text):
     found = {abs(x) for x in numbers_in(text)}
