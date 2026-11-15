@@ -8,7 +8,7 @@ Bento runs entirely on the spacecraft's own computer, with no cloud and no link 
 
 > Unlike HAL, Bento can't control anything, it always says why, and the crew decides.
 
-Demo video: `<link>` · Project page: `<link>`
+Demo video: `<https://www.youtube.com/watch?v=L4FFp79WOK4>` · Project page: `<https://github.com/Marco-2672/nasa-hackathon-2026>`
 
 ---
 
