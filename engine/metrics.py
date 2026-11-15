@@ -13,6 +13,11 @@ STATUS_THRESHOLDS = {
     "exercise":            {"amber_low": -0.50},
 }
 
+# cabin CO2 limits in mmHg (NASA, not demo values): NASA-STD-3001 Vol 2 [V2 6004] limits the one-hour
+# average to 3 mmHg; 5.3 mmHg (0.7%) is the 180-day Spacecraft Maximum Allowable Concentration
+CO2_LIMIT_MMHG = 3.0
+CO2_SMAC_MMHG = 5.3
+
 # trend threshold
 TREND_THRESHOLD = 0.07
 

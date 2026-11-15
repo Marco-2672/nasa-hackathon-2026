@@ -9,7 +9,7 @@ import json
 import sys
 from pathlib import Path
 
-from .metrics import change_pct, status_for
+from .metrics import CO2_LIMIT_MMHG, CO2_SMAC_MMHG, change_pct, status_for
 from .schema import DEFAULT_DB, connect, init_db
 
 LOOKBACK_DAYS = 3
@@ -36,6 +36,55 @@ def _baseline(con, crew_id: str, metric: str):
         (crew_id, metric),
     ).fetchone()
     return None if row is None else row["value"]
+
+
+def injected_value(con, crew_id, metric: str, clock: int):
+    # a live fault overrides the simulated reading from the moment it was injected
+    row = con.execute(
+        "SELECT value FROM injected WHERE metric=? AND (crew_id IS ? OR crew_id=?) AND from_minutes<=? "
+        "ORDER BY from_minutes DESC LIMIT 1", (metric, crew_id, crew_id, clock),
+    ).fetchone()
+    return None if row is None else row["value"]
+
+
+def current_co2(con, clock: int):
+    row = con.execute("SELECT co2_mmhg FROM environment WHERE minutes<=? ORDER BY minutes DESC LIMIT 1",
+                      (clock,)).fetchone()
+    base = None if row is None else row["co2_mmhg"]
+    over = injected_value(con, None, "co2_mmhg", clock)
+    return over if over is not None else base
+
+
+def current_reading(con, crew_id: str, metric: str, clock: int):
+    over = injected_value(con, crew_id, metric, clock)
+    if over is not None:
+        return over
+    row = con.execute("SELECT value FROM readings WHERE crew_id=? AND metric=? AND minutes<=? "
+                      "ORDER BY minutes DESC LIMIT 1", (crew_id, metric, clock)).fetchone()
+    return None if row is None else row["value"]
+
+
+def _live_alerts(con, crew_id: str, today: int, clock: int) -> list[dict]:
+    # alerts from the current reading (not the daily one), so live faults show up immediately
+    out: list[dict] = []
+    co2 = current_co2(con, clock)
+    if co2 is not None and co2 > CO2_LIMIT_MMHG:
+        out.append({
+            "level": "red" if co2 >= CO2_SMAC_MMHG else "amber", "code": "CO2_HIGH",
+            "message": f"Cabin CO2 {co2:.1f} mmHg, above NASA's {CO2_LIMIT_MMHG:g} mmHg limit",
+            "since_mission_day": today, "protocol_ids": ["co2_high"],
+        })
+    spo2 = current_reading(con, crew_id, "spo2", clock)
+    spo2_base = _baseline(con, crew_id, "spo2")
+    if spo2 is not None and spo2_base:
+        level = status_for("spo2", spo2, spo2_base)
+        if level in ("amber", "red"):
+            out.append({
+                "level": level, "code": "SPO2_LOW",
+                "message": f"Oxygen saturation {round(spo2)}%, {abs(change_pct(spo2, spo2_base))}% below baseline",
+                "since_mission_day": today, "protocol_ids": ["breathing_difficulty"],
+            })
+    return out
 
 
 def _alerts_for_crew(con, crew_id: str, today: int) -> list[dict]:
@@ -121,7 +170,7 @@ def derive_alerts(db_path: Path = DEFAULT_DB) -> int:
         for crew_id in ("alex", "sam"):
             event_alerts = [{"level": p["level"], "code": p["code"], "message": p["message"],
                              "since_mission_day": today, "protocol_ids": p["protocol_ids"]} for p in active_events]
-            for a in _alerts_for_crew(con, crew_id, today) + event_alerts:
+            for a in _alerts_for_crew(con, crew_id, today) + _live_alerts(con, crew_id, today, clock) + event_alerts:
                 idx += 1
                 con.execute(
                     "INSERT INTO alerts (alert_id, crew_id, level, code, message, "

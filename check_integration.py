@@ -188,7 +188,34 @@ def solar_event_reannounced_after_reset():
         f"take 1 announced={bool(first)}, take 2 announced={bool(second)}, amber alerts repeated={amber_repeat}"
 
 
+def live_faults_alert_and_reset():
+    api.inject_fault("co2_scrubber_fault")
+    env = run_tool("get_environment", {})
+    co2 = [a for a in run_tool("get_alerts", {})["alerts"] if a["code"] == "CO2_HIGH"]
+    api.inject_fault("sam_spo2_drop")
+    sp = [a for a in run_tool("get_alerts", {"crew_id": "sam"})["alerts"] if a["code"] == "SPO2_LOW"]
+    crew_file = run_tool("get_crew_profile", {"crew_id": "alex"})["summary_text"]
+    api.reset_demo()
+    clean = not [a for a in run_tool("get_alerts", {})["alerts"] if a["code"] in ("CO2_HIGH", "SPO2_LOW")]
+    ok = (env["cabin"]["co2_mmhg"] == 4.2 and env["cabin"]["status"] == "amber" and len(co2) == 2
+          and sp and sp[0]["level"] == "red" and "CO2" in crew_file and clean
+          and run_tool("get_environment", {})["cabin"]["co2_mmhg"] == 2.5)
+    return ok, f"cabin={env['cabin']}, co2 alerts={len(co2)}, sam spo2={sp}, crew file has CO2={'CO2' in crew_file}, reset clean={clean}"
+
+
+def comms_and_status_logged():
+    vl.say_lines(["Test line for the dashboard."], "briefing", "alex")
+    vl.set_state("thinking")
+    lines = run_tool("get_conversation", {})["lines"]
+    status = run_tool("get_status", {})
+    ok = bool(lines) and lines[-1]["text"] == "Test line for the dashboard." and lines[-1]["kind"] == "briefing" \
+        and status["state"] == "thinking" and status["online"]
+    return ok, f"last comms line={lines[-1] if lines else None}, status={status}"
+
+
 def protocol_cards_ready():
+    for f in api.list_faults():  # every fault's alert must point at a real card
+        api.inject_fault(f["fault"])
     cards = {p["protocol_id"] for p in run_tool("list_protocols", {})}
     needed = {safety.protocol_for(k) for k in safety.EMERGENCY_PATTERNS} | {"radiation_shelter"}
     for a in run_tool("get_alerts", {})["alerts"]:
@@ -205,7 +232,8 @@ CHECKS = [
     ("engine", flags_backed_by_data), ("engine", emergency_survives_engine_rerun),
     ("engine", emergency_has_right_protocol), ("engine", solar_event_is_an_alert),
     ("engine", clock_jump_consistent), ("engine", demo_reset_restores_state),
-    ("voice", solar_event_reannounced_after_reset), ("content", protocol_cards_ready),
+    ("voice", solar_event_reannounced_after_reset), ("engine", live_faults_alert_and_reset),
+    ("voice", comms_and_status_logged), ("content", protocol_cards_ready),
 ]
 
 

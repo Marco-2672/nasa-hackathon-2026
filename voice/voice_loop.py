@@ -3,10 +3,13 @@
 mic -> faster-whisper -> emergency check -> llama-server + tools -> number guard -> Kokoro -> speaker
 
 Run from the repo root:  python -m voice.voice_loop
-Keys: Enter to start recording, Enter to stop. Type a crew id (alex, sam) to switch speaker. q quits.
+Talk: press Enter (or the dashboard's Talk button) to start recording, again to stop.
+Type a crew id (alex, sam) to switch speaker. q quits.
 """
 import queue
 import re
+import select
+import sys
 import threading
 import time
 import urllib.error
@@ -31,6 +34,8 @@ CREW = ["alex", "sam"]
 LEAD_IN_S = 0.1        # silence before each sentence; raise to 0.3 if the first word is still clipped
 HISTORY_TURNS = 4      # past exchanges kept; tool messages are not kept, to save context
 ALERT_POLL_S = 3       # how often to look for new engine alerts while waiting at the prompt
+RED_CARD_STEPS = 2     # a red alert reads this many protocol steps word for word, then the AI briefs the crew
+MAX_RECORD_S = 30      # recording stops by itself after this long
 
 print("Loading speech models...")
 stt = WhisperModel("small.en", device="cpu", compute_type="int8", cpu_threads=8)
@@ -79,14 +84,54 @@ class Speaker:
 speaker = Speaker()
 
 
+# ---------------------------------------------------------------- dashboard links (comms log, status, Talk button)
+def log_line(speaker_name, text, crew=None, kind=""):
+    run_tool("log_conversation", {"speaker": speaker_name, "text": text, "crew_id": crew, "kind": kind})
+
+
+def set_state(state):
+    run_tool("set_status", {"state": state})
+
+
+def talk_request():
+    res = run_tool("take_talk_request", {})
+    return res.get("request", "") if isinstance(res, dict) else ""
+
+
+def wait_for_command(prompt):
+    """Wait for a typed line, or for the dashboard's Talk button (returns "" = start talking)."""
+    print(prompt, end="", flush=True)
+    last_beat = 0.0
+    while True:
+        ready, _, _ = select.select([sys.stdin], [], [], 0.2)
+        if ready:
+            return sys.stdin.readline().strip().lower()
+        if time.time() - last_beat > 3:
+            run_tool("heartbeat", {})
+            last_beat = time.time()
+        if talk_request() == "start":
+            print("(Talk button)")
+            return ""
+
+
 def record_ptt():
     chunks = []
 
     def cb(indata, frames, t, status):
         chunks.append(indata.copy())
 
+    set_state("listening")
+    print("  Recording... press Enter (or the dashboard's Stop button) to stop.")
+    t0 = time.time()
     with sd.InputStream(samplerate=SR_IN, channels=1, dtype="float32", callback=cb):
-        input("  Recording... press Enter to stop.")
+        while time.time() - t0 < MAX_RECORD_S:
+            ready, _, _ = select.select([sys.stdin], [], [], 0.1)
+            if ready:
+                sys.stdin.readline()
+                break
+            if talk_request() == "stop":
+                break
+    set_state("thinking")
     return np.concatenate(chunks)[:, 0] if chunks else np.zeros(0, np.float32)
 
 
@@ -108,9 +153,7 @@ def handle_emergency(crew, kind, phrase, transcript):
         lines += [card.get("title", "")] + list(card["steps"])
     else:
         print(f"  (no protocol card found for '{card_id}')")
-    for line in filter(None, lines):
-        print(f"  Companion (fixed): {line}")
-        speaker.say(line)
+    say_lines([line for line in lines if line], "emergency", crew)
 
 
 CANCEL_RE = re.compile(r"\b(stop|cancel|pause|later|interrupt|skip)\b", re.I)
@@ -143,17 +186,21 @@ def checkin_answer(state, text):
     return ["Thanks, that's your check-in done."] + (flags or ["Nothing stands out against your usual answers."]), False
 
 
-def say_lines(lines, tag):
+def say_lines(lines, tag, crew=None):
+    set_state("speaking")
     for line in lines:
-        print(f"  Companion ({tag}): {line}")
+        print(f"  {llm.NAME} ({tag}): {line}")
+        log_line("bento", line, crew, tag)
         speaker.say(line)
 
 
 # ---------------------------------------------------------------- speak first on new alerts
 idle = threading.Event()          # set only while waiting at the prompt, so alerts never interrupt a turn
+turn_lock = threading.Lock()      # one speaker at a time: a briefing and a crew turn never overlap
 announce_lock = threading.Lock()
 announcements = []                # alerts spoken since the last turn, added to the conversation history
 prompt_text = [""]
+session = {"crew": CREW[0], "history": []}   # shared with the alert watcher
 
 
 def _alert_key(a):
@@ -161,11 +208,11 @@ def _alert_key(a):
     return a.get("crew_id"), a.get("code"), str(a.get("alert_id", "")).split("-")[0]
 
 
-def new_alert_lines(seen):
-    """Lines to speak for alerts not seen before, plus whether any is red. Plain code, no model."""
+def new_alert_groups(seen):
+    """Alerts not seen before, grouped so a crew-wide event is announced once: [(level, code, message, items)]."""
     res = run_tool("get_alerts", {})
     if not isinstance(res, dict) or "alerts" not in res:
-        return [], False
+        return []
     current = {_alert_key(a): a.get("level") for a in res["alerts"]}
     for key in [k for k, level in seen.items() if level == "red" and k not in current]:
         del seen[key]  # a red alert that has cleared (e.g. demo reset) can be announced again
@@ -174,20 +221,71 @@ def new_alert_lines(seen):
     groups = {}
     for a in fresh:  # a crew-wide event arrives as one alert per crew member: announce it once
         groups.setdefault((a.get("level"), a.get("code"), a.get("message", "")), []).append(a)
+    return [(level, code, message, items) for (level, code, message), items in groups.items()]
+
+
+def _who(items):
+    return "All crew" if len(items) > 1 else str(items[0].get("crew_id", "")).title()
+
+
+def fixed_alert_lines(groups):
+    """The plain-code part of an announcement. Red: headline + the first protocol steps word for word."""
     lines, red = [], False
-    for (level, code, message), items in groups.items():
-        who = "All crew" if len(items) > 1 else str(items[0].get("crew_id", "")).title()
+    for level, code, message, items in groups:
         msg = message if message.endswith(".") else message + "."
         if level == "red":
             red = True
-            lines.append(f"{who}, priority alert. {msg}")
+            lines.append(f"{_who(items)}, priority alert. {msg}")
             ids = items[0].get("protocol_ids") or []
             card = run_tool("get_protocol", {"protocol_id": ids[0]}) if ids else None
             if isinstance(card, dict) and card.get("steps"):
-                lines += [card.get("title", "")] + list(card["steps"])
+                lines += list(card["steps"])[:RED_CARD_STEPS]
         else:
-            lines.append(f"{who}, a new health alert. {msg} Ask me if you want to talk it through.")
+            lines.append(f"{_who(items)}, new alert. {msg}")
     return [line for line in lines if line], red
+
+
+def new_alert_lines(seen):
+    """Plain-code announcement for alerts not seen before (no model). Used by the tests."""
+    return fixed_alert_lines(new_alert_groups(seen))
+
+
+def ai_briefing(groups, crew, history):
+    """The AI reacts to the new situation: checks related readings, connects them, points to the card.
+    Same guardrails as a crew turn: tool gates, number guard, speculation and promise filters."""
+    alert_text = "; ".join(f"{level} alert for {_who(items)}: {message}" for level, code, message, items in groups)
+    target = groups[0][3][0].get("crew_id") if len(groups) == 1 and len(groups[0][3]) == 1 else crew
+    note = (f"(Ship alert system, not the crew speaking.) New alert: {alert_text}. "
+            "Without being asked, brief the crew in at most 3 short sentences: check the related readings with your "
+            "tools, say what changed against baseline or limits, and name the protocol card to follow. "
+            "Do not repeat the alert word for word and do not log symptoms.")
+    system, facts = llm.build_system_prompt(target, run_tool)
+    messages = [{"role": "system", "content": system}] + history[-2 * HISTORY_TURNS:] + [{"role": "user", "content": note}]
+    reply, results = llm.run_turn(messages, run_tool, target, note)
+    earlier = [m["content"] for m in history if m["role"] == "assistant"]
+    return safety.filter_reply(reply, safety.allowed_numbers(facts, alert_text, *results, *earlier))
+
+
+def respond_to_alerts(seen, crew, history):
+    """Speak first on new alerts: code part (alarm, headline, first steps), then the AI briefing.
+    Returns (fixed_lines, red, briefing_lines, briefing_dropped)."""
+    groups = new_alert_groups(seen)
+    if not groups:
+        return [], False, [], []
+    fixed, red = fixed_alert_lines(groups)
+    print()
+    if red:
+        speaker.alarm()
+    say_lines(fixed, "alert")
+    try:
+        briefing, dropped = ai_briefing(groups, crew, history)
+    except Exception as e:  # model server down: the code part has already been spoken
+        print(f"  [warn] AI briefing failed: {e}")
+        briefing, dropped = [], []
+    for sentence, why in dropped:
+        print(f"  [guard] dropped: {sentence!r} ({why})")
+    say_lines(briefing, "briefing")
+    return fixed, red, briefing, dropped
 
 
 def alert_watcher(seen):
@@ -195,16 +293,17 @@ def alert_watcher(seen):
         time.sleep(ALERT_POLL_S)
         if not idle.is_set():
             continue
-        lines, red = new_alert_lines(seen)
-        if not lines:
-            continue
-        print()
-        if red:
-            speaker.alarm()
-        say_lines(lines, "alert")
-        with announce_lock:
-            announcements.append(" ".join(lines))
-        print(prompt_text[0].lstrip("\n"), end="", flush=True)
+        with turn_lock:
+            if not idle.is_set():
+                continue
+            fixed, red, briefing, _ = respond_to_alerts(seen, session["crew"], list(session["history"]))
+            if not fixed:
+                continue
+            speaker.wait()
+            set_state("ready")
+            with announce_lock:
+                announcements.append(" ".join(fixed + briefing))
+            print(prompt_text[0].lstrip("\n"), end="", flush=True)
 
 
 def warm_up():
@@ -221,101 +320,112 @@ def warm_up():
     llm.warm_up(run_tool, CREW[0])
 
 
+def take_turn(crew, checkin):
+    """Record, transcribe and answer one crew turn. Returns the check-in state."""
+    history = session["history"]
+    audio = record_ptt()
+    t0 = time.time()
+    text = transcribe(audio)
+    t_stt = time.time() - t0
+    if not text:
+        print("  (Heard nothing. Press Enter or Talk, speak, then press Enter or Stop.)")
+        return checkin
+    print(f"  You: {text}   (speech-to-text {t_stt:.1f} s)")
+    log_line("crew", text, crew)
+
+    hit = safety.check_emergency(text)
+    if hit:
+        handle_emergency(crew, hit[0], hit[1], text)
+        return None
+
+    if checkin:
+        lines, active = checkin_answer(checkin, text)
+        say_lines(lines, "check-in", crew)
+        history += [{"role": "user", "content": text}, {"role": "assistant", "content": " ".join(lines)}]
+        return checkin if active else None
+
+    system, facts = llm.build_system_prompt(crew, run_tool)
+    messages = ([{"role": "system", "content": system}]
+                + history[-2 * HISTORY_TURNS:]
+                + [{"role": "user", "content": text}])
+    t1 = time.time()
+    try:
+        reply, results = llm.run_turn(messages, run_tool, crew, text)
+    except (urllib.error.URLError, ConnectionError, TimeoutError) as e:
+        print(f"  [error] model server not reachable ({e}). Start it with: "
+              "nohup ~/spaceapps/start_llm.sh > ~/spaceapps/llama.log 2>&1 &")
+        return checkin
+    t_llm = time.time() - t1
+
+    started = next((r for r in results if isinstance(r, dict) and r.get("checkin_id") and r.get("questions")), None)
+    if started:
+        checkin = {"checkin_id": started["checkin_id"], "questions": started["questions"], "i": 0, "answers": {}}
+        lines = ["Let's do your check-in. Answer each question with a number.", checkin_question(checkin)]
+        say_lines(lines, "check-in", crew)
+        history += [{"role": "user", "content": text}, {"role": "assistant", "content": " ".join(lines)}]
+        return checkin
+
+    if llm.LAST_SEVERITY >= 10:
+        print("\n  !!! EMERGENCY (severity 10 reported to the model). Raising the alarm.")
+        run_tool("raise_emergency", {"crew_id": crew, "trigger_phrase": "severity 10 report", "transcript": text,
+                                     "protocol_id": safety.DEFAULT_EMERGENCY_CARD})
+        speaker.alarm()
+
+    # Trusted numbers: this turn's tool results, the crew file, the user's words, and earlier
+    # replies (they already passed the guard, so their numbers came from tool data).
+    earlier = [m["content"] for m in history if m["role"] == "assistant"]
+    allowed = safety.allowed_numbers(facts, text, *results, *earlier)
+    spoken, dropped = safety.filter_reply(reply, allowed)
+    for sentence, why in dropped:
+        print(f"  [guard] dropped: {sentence!r} ({why})")
+    set_state("speaking")
+    t_first = None
+    for sentence in spoken:
+        log_line("bento", sentence, crew, "reply")
+        speaker.say(sentence)
+        if t_first is None:
+            t_first = time.time() - t0
+
+    print(f"  {llm.NAME}: {' '.join(spoken)}")
+    print(f"  timings: speech-to-text {t_stt:.1f} s | model {t_llm:.1f} s | "
+          f"first audio {t_first:.1f} s after you stopped")
+    history += [{"role": "user", "content": text}, {"role": "assistant", "content": " ".join(spoken)}]
+    return checkin
+
+
 def main():
     warm_up()
-    crew, history, checkin = CREW[0], [], None
+    checkin = None
     seen = {}
-    new_alert_lines(seen)  # alerts that already exist at startup count as known
+    new_alert_groups(seen)  # alerts that already exist at startup count as known
     threading.Thread(target=alert_watcher, args=(seen,), daemon=True).start()
-    print("Ready. Enter = start/stop recording. Type a crew id to switch speaker, q to quit.")
+    set_state("ready")
+    print("Ready. Enter (or the dashboard's Talk button) = start/stop recording. "
+          "Type a crew id to switch speaker, q to quit.")
     while True:
+        crew = session["crew"]
         prompt_text[0] = f"\n[{crew}] Enter to talk > "
         idle.set()
-        cmd = input(prompt_text[0]).strip().lower()
+        cmd = wait_for_command(prompt_text[0])
         idle.clear()
-        speaker.wait()  # let an alert finish before recording, so the mic doesn't pick it up
-        with announce_lock:  # the model should know what was just announced
-            for a in announcements:
-                history += [{"role": "user", "content": "(The ship's alert system has just announced something.)"},
-                            {"role": "assistant", "content": a}]
-            announcements.clear()
-        if cmd == "q":
-            break
-        if cmd in CREW:
-            crew, history, checkin = cmd, [], None
-            print(f"  Now speaking as {crew}.")
-            continue
-
-        audio = record_ptt()
-        t0 = time.time()
-        text = transcribe(audio)
-        t_stt = time.time() - t0
-        if not text:
-            print("  (Heard nothing. Press Enter, speak, then press Enter again.)")
-            continue
-        print(f"  You: {text}   (speech-to-text {t_stt:.1f} s)")
-
-        hit = safety.check_emergency(text)
-        if hit:
-            checkin = None
-            handle_emergency(crew, hit[0], hit[1], text)
+        with turn_lock:  # if an alert briefing is under way, it finishes first
             speaker.wait()
-            continue
-
-        if checkin:
-            lines, active = checkin_answer(checkin, text)
-            checkin = checkin if active else None
-            say_lines(lines, "check-in")
-            history += [{"role": "user", "content": text}, {"role": "assistant", "content": " ".join(lines)}]
+            with announce_lock:  # the model should know what was just announced
+                for a in announcements:
+                    session["history"] += [
+                        {"role": "user", "content": "(The ship's alert system has just announced something.)"},
+                        {"role": "assistant", "content": a}]
+                announcements.clear()
+            if cmd == "q":
+                break
+            if cmd in CREW:
+                session["crew"], session["history"], checkin = cmd, [], None
+                print(f"  Now speaking as {cmd}.")
+                continue
+            checkin = take_turn(crew, checkin)
             speaker.wait()
-            continue
-
-        system, facts = llm.build_system_prompt(crew, run_tool)
-        messages = ([{"role": "system", "content": system}]
-                    + history[-2 * HISTORY_TURNS:]
-                    + [{"role": "user", "content": text}])
-        t1 = time.time()
-        try:
-            reply, results = llm.run_turn(messages, run_tool, crew, text)
-        except (urllib.error.URLError, ConnectionError, TimeoutError) as e:
-            print(f"  [error] model server not reachable ({e}). Start it with: "
-                  "nohup ~/spaceapps/start_llm.sh > ~/spaceapps/llama.log 2>&1 &")
-            continue
-        t_llm = time.time() - t1
-
-        started = next((r for r in results if isinstance(r, dict) and r.get("checkin_id") and r.get("questions")), None)
-        if started:
-            checkin = {"checkin_id": started["checkin_id"], "questions": started["questions"], "i": 0, "answers": {}}
-            lines = ["Let's do your check-in. Answer each question with a number.", checkin_question(checkin)]
-            say_lines(lines, "check-in")
-            history += [{"role": "user", "content": text}, {"role": "assistant", "content": " ".join(lines)}]
-            speaker.wait()
-            continue
-
-        if llm.LAST_SEVERITY >= 10:
-            print("\n  !!! EMERGENCY (severity 10 reported to the model). Raising the alarm.")
-            run_tool("raise_emergency", {"crew_id": crew, "trigger_phrase": "severity 10 report", "transcript": text,
-                                         "protocol_id": safety.DEFAULT_EMERGENCY_CARD})
-            speaker.alarm()
-
-        # Trusted numbers: this turn's tool results, the crew file, the user's words, and earlier
-        # replies (they already passed the guard, so their numbers came from tool data).
-        earlier = [m["content"] for m in history if m["role"] == "assistant"]
-        allowed = safety.allowed_numbers(facts, text, *results, *earlier)
-        spoken, dropped = safety.filter_reply(reply, allowed)
-        for sentence, why in dropped:
-            print(f"  [guard] dropped: {sentence!r} ({why})")
-        t_first = None
-        for sentence in spoken:
-            speaker.say(sentence)
-            if t_first is None:
-                t_first = time.time() - t0
-
-        print(f"  Companion: {' '.join(spoken)}")
-        print(f"  timings: speech-to-text {t_stt:.1f} s | model {t_llm:.1f} s | "
-              f"first audio {t_first:.1f} s after you stopped")
-        history += [{"role": "user", "content": text}, {"role": "assistant", "content": " ".join(spoken)}]
-        speaker.wait()
+            set_state("ready")
+    set_state("offline")
 
 
 if __name__ == "__main__":

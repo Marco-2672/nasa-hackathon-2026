@@ -29,7 +29,7 @@ Conventions:
 ```json
 {"mission_day": 47, "time": "07:30",
  "radiation": {"dose_rate_msv_per_day": 1.8, "mission_dose_msv": 84.6, "status": "green"},
- "cabin": {"o2_pct": 21, "co2_mmhg": 3.2, "temp_c": 22, "status": "green"},
+ "cabin": {"o2_pct": 21, "co2_mmhg": 2.5, "temp_c": 22, "status": "green"},
  "events": []}
 ```
 
@@ -94,3 +94,13 @@ Conventions:
 - Demo controls: `set_clock(mission_day, time)` and `trigger_event(name)`.
   - Needed to script the demo video, for example: jump to day 47, 07:30; fire the solar particle event now.
 
+### Added Sunday: live faults, comms log, status (code-facing; the AI never calls these)
+
+- `inject_fault(kind)`: `co2_scrubber_fault` (cabin CO2 4.2 mmHg), `sam_spo2_drop` (Sam's SpO2 91%), `solar_particle_event`, or `surprise` (random). Applied from the current mission time; `reset_demo()` removes them.
+- `list_faults()`, `active_faults()`.
+- New alerts from the current reading: `CO2_HIGH` (above NASA-STD-3001's 3 mmHg, red at the 5.3 mmHg 180-day SMAC) with card `co2_high`; `SPO2_LOW` (amber or red by the SpO2 thresholds) with card `breathing_difficulty`.
+- `get_vitals` metrics now include `change` (latest minus baseline, rounded like the values).
+- `log_conversation(speaker, text, crew_id, kind)`, `get_conversation(limit)`: the dashboard's comms log.
+- `set_status(state)`, `heartbeat()`, `get_status()`: Bento's state (ready, listening, thinking, speaking) and whether the voice loop is running.
+- `request_talk("start" | "stop")`, `take_talk_request()`: the dashboard's Talk button.
+- `get_series(crew_id, metric, hours)`, `get_co2_series(hours)`: chart data up to the mission clock, faults applied.

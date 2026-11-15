@@ -22,6 +22,9 @@ STEP_MIN = 15
 SLEEP_MIN = 7 * 60
 EXERCISE_MIN = 23 * 60
 
+# cabin co2 in mmHg: below NASA-STD-3001's 3 mmHg one-hour limit; live faults can push it above
+CABIN_CO2 = 2.5
+
 # radiation: cruise is curiosity rad transit, spe is simulated
 CRUISE_DOSE_RATE = 1.8
 SPE_DOSE_RATE = 20.0
@@ -242,7 +245,7 @@ def build(db_path: Path) -> None:
             for mod in range(0, 1440, STEP_MIN):
                 environment.append((
                     day, _hhmm(mod), _minutes(day, mod),
-                    21, 3.2, 22,
+                    21, CABIN_CO2, 22,
                     _dose_rate(day, mod),
                     _mission_dose(day, mod),
                 ))

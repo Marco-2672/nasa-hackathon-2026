@@ -107,6 +107,28 @@ CREATE TABLE IF NOT EXISTS emergencies (
     transcript     TEXT NOT NULL
 );
 
+-- live faults injected from the dashboard; readers apply them on top of the simulated readings
+-- (crew_id NULL = cabin-wide, e.g. co2_mmhg); reset_demo() clears them
+CREATE TABLE IF NOT EXISTS injected (
+    kind         TEXT NOT NULL,
+    crew_id      TEXT,
+    metric       TEXT NOT NULL,
+    value        REAL NOT NULL,
+    from_minutes INTEGER NOT NULL
+);
+
+-- what was said and announced, for the dashboard's comms log
+CREATE TABLE IF NOT EXISTS conversation (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    at          REAL NOT NULL,
+    mission_day INTEGER,
+    time        TEXT,
+    speaker     TEXT NOT NULL,
+    crew_id     TEXT,
+    text        TEXT NOT NULL,
+    kind        TEXT NOT NULL DEFAULT ''
+);
+
 -- derived alerts; alert_id format A{day}-NN
 CREATE TABLE IF NOT EXISTS alerts (
     alert_id          TEXT PRIMARY KEY,

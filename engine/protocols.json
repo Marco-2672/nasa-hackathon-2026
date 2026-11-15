@@ -33,6 +33,23 @@
     "source": "Demonstration content, not medical advice. NASA NTRS, Scheuring, Moomaw and Johnston, Fatigue in U.S. Astronauts Onboard the ISS, https://ntrs.nasa.gov/api/citations/20150009487/downloads/20150009487.pdf ; NASA NTRS, Subjective Sleep Experience During Shuttle Missions, https://ntrs.nasa.gov/api/citations/20120007773/downloads/20120007773.pdf ; NASA Ames Fatigue Countermeasures Laboratory, https://humansystems.arc.nasa.gov/groups/fatigue/"
   },
   {
+    "protocol_id": "co2_high",
+    "title": "High cabin CO2",
+    "steps": [
+      "Check that the cabin air fans are running, and move to a module with better air flow.",
+      "Check the CO2 scrubber and report the fault to the ground team.",
+      "NASA limits cabin CO2 to a one-hour average of no more than 3 mmHg.",
+      "On the ISS, each 1 mmHg rise in CO2 doubled the odds of a crew member reporting a headache.",
+      "Report headaches, tiredness or trouble concentrating to the crew medical officer.",
+      "Slow down on critical tasks and cross-check each other's work until CO2 is back under the limit."
+    ],
+    "escalate_if": [
+      "CO2 keeps rising, or reaches 5.3 mmHg.",
+      "Anyone has trouble breathing: use the breathing difficulty card."
+    ],
+    "source": "Demonstration content, not medical advice. NASA OCHMO Technical Brief OCHMO-TB-004 Carbon Dioxide, https://www.nasa.gov/wp-content/uploads/2023/12/ochmo-tb-004-carbon-dioxide.pdf ; NASA-STD-3001 Vol 2 [V2 6004] (one-hour average no more than 3 mmHg), https://www.nasa.gov/reference/6-0-natural-and-induced-environments-vol-2 ; NASA NTRS, The Relationship Between CO2 Levels and CO2 Related Symptoms Reported on the ISS (Foy, Law et al. 2014: odds of headache double per 1 mmHg), http://hdl.handle.net/2060/20140003857 ; NASA NTRS, CO2 on the International Space Station: An Operations Update (missed steps and headaches with rising CO2), https://ntrs.nasa.gov/archive/nasa/casi.ntrs.nasa.gov/20150019624.pdf ; NASA NTRS 20100036637 (180-day SMAC 0.7% = 5.3 mmHg), https://ntrs.nasa.gov/citations/20100036637"
+  },
+  {
     "protocol_id": "chest_pain",
     "title": "Chest pain",
     "steps": [

@@ -6,11 +6,13 @@
 from __future__ import annotations
 
 import json
+import random
 import statistics
+import time as _time
 from pathlib import Path
 
-from .engine import derive_alerts
-from .metrics import change_pct, round_spoken, status_for, trend_3d
+from .engine import current_co2, derive_alerts, injected_value
+from .metrics import CO2_LIMIT_MMHG, CO2_SMAC_MMHG, change_pct, round_spoken, status_for, trend_3d
 from .schema import DEFAULT_DB, connect, init_db
 
 # order and units match tool_examples.get_vitals
@@ -96,6 +98,9 @@ def get_vitals(crew_id: str, hours: int = 24) -> dict:
             if base_row is None:
                 return {"error": f"no baseline for {crew_id}/{m}"}
             latest = latest_row["value"]
+            over = injected_value(con, crew_id, m, clock["minutes"])
+            if over is not None:
+                latest = over
             baseline = base_row["value"]
             prior_row = _three_days_earlier(con, crew_id, m, clock["minutes"])
             prior = None if prior_row is None else prior_row["value"]
@@ -148,6 +153,8 @@ def get_environment() -> dict:
                     "protocol_ids": p["protocol_ids"],
                 })
 
+        co2 = current_co2(con, clock["minutes"])
+        cabin_status = "red" if co2 >= CO2_SMAC_MMHG else "amber" if co2 > CO2_LIMIT_MMHG else "green"
         return {
             "mission_day": clock["mission_day"],
             "time": clock["time"],
@@ -158,9 +165,9 @@ def get_environment() -> dict:
             },
             "cabin": {
                 "o2_pct": int(env["o2_pct"]),
-                "co2_mmhg": round(env["co2_mmhg"], 1),
+                "co2_mmhg": round(co2, 1),
                 "temp_c": int(env["temp_c"]),
-                "status": "green",
+                "status": cabin_status,
             },
             "events": events,
         }
@@ -474,6 +481,8 @@ def _alert_description(code: str, since_day: int) -> str:
         "EXERCISE_MISSED": f"missed exercise since day {since_day}",
         "EMERGENCY": "emergency logged",
         "SPE_SHELTER": "solar particle event, shelter protocol",
+        "CO2_HIGH": f"cabin CO2 above NASA's {CO2_LIMIT_MMHG:g} mmHg limit",
+        "SPO2_LOW": "oxygen saturation below baseline",
     }.get(code, code.lower().replace("_", " "))
 
 
@@ -571,8 +580,10 @@ def reset_demo() -> dict:
     try:
         from .sim import seed_logs
         con = connect(DEFAULT_DB)
-        for table in ("symptoms", "checkins", "emergencies", "alerts"):
+        init_db(con)
+        for table in ("symptoms", "checkins", "emergencies", "alerts", "injected", "conversation"):
             con.execute(f"DELETE FROM {table}")
+        con.execute("DELETE FROM meta WHERE key='ptt'")
         seed_logs(con)
         con.commit()
         con.close()
@@ -592,5 +603,184 @@ def trigger_event(name: str) -> dict:
         if row is None:
             return {"error": f"unknown event {name}"}
         return set_clock(row["mission_day"], row["time"])
+    except Exception as e:
+        return _err(e)
+
+
+# ---------------------------------------------------------------- live faults (demo controls)
+# Faults the dashboard can inject at the current mission time. They override the simulated readings
+# until reset_demo(). Values are chosen to cross the alert thresholds, not taken from a real incident.
+FAULTS = {
+    "co2_scrubber_fault":   {"label": "CO2 scrubber fault", "crew_id": None, "metric": "co2_mmhg", "value": 4.2},
+    "sam_spo2_drop":        {"label": "Sam: blood oxygen drop", "crew_id": "sam", "metric": "spo2", "value": 91},
+    "solar_particle_event": {"label": "Solar particle event"},
+}
+
+
+def list_faults() -> list:
+    return [{"fault": k, "label": v["label"]} for k, v in FAULTS.items()]
+
+
+def active_faults() -> list:
+    try:
+        con = connect(DEFAULT_DB)
+        init_db(con)
+        kinds = [r["kind"] for r in con.execute("SELECT DISTINCT kind FROM injected")]
+        env = get_environment()
+        if any(e.get("code") == "SPE_SHELTER" for e in env.get("events", [])):
+            kinds.append("solar_particle_event")
+        return kinds
+    except Exception:
+        return []
+
+
+def inject_fault(kind: str) -> dict:
+    # kind "surprise" picks a fault at random (not seeded on purpose: nobody knows what is coming)
+    try:
+        if kind == "surprise":
+            fresh = [k for k in FAULTS if k not in active_faults()] or list(FAULTS)
+            kind = random.SystemRandom().choice(fresh)
+        f = FAULTS.get(kind)
+        if f is None:
+            return {"error": f"unknown fault {kind}"}
+        if kind == "solar_particle_event":
+            res = trigger_event("solar_particle_event")
+            if "error" in res:
+                return res
+        else:
+            con = connect(DEFAULT_DB)
+            init_db(con)
+            clock = _clock(con)
+            if clock is None:
+                return {"error": "clock not set"}
+            con.execute("INSERT INTO injected (kind, crew_id, metric, value, from_minutes) VALUES (?, ?, ?, ?, ?)",
+                        (kind, f["crew_id"], f["metric"], f["value"], clock["minutes"]))
+            con.commit()
+            con.close()
+            derive_alerts(DEFAULT_DB)
+        return {"ok": True, "fault": kind, "label": f["label"]}
+    except Exception as e:
+        return _err(e)
+
+
+# ---------------------------------------------------------------- chart series (dashboard)
+def get_series(crew_id: str, metric: str, hours: int = 48) -> dict:
+    # readings up to the mission clock, x = hours before now, live faults applied
+    try:
+        con = connect(DEFAULT_DB)
+        init_db(con)
+        clock = _clock(con)["minutes"]
+        rows = con.execute("SELECT minutes, value FROM readings WHERE crew_id=? AND metric=? AND minutes BETWEEN ? AND ? "
+                           "ORDER BY minutes", (crew_id, metric, clock - hours * 60, clock)).fetchall()
+        f = con.execute("SELECT value, from_minutes FROM injected WHERE crew_id=? AND metric=? "
+                        "ORDER BY from_minutes DESC LIMIT 1", (crew_id, metric)).fetchone()
+        pts = [{"hours": round((r["minutes"] - clock) / 60, 2),
+                "value": f["value"] if f and r["minutes"] >= f["from_minutes"] else r["value"]} for r in rows]
+        if f and f["from_minutes"] <= clock and (not pts or pts[-1]["hours"] != 0.0):
+            pts.append({"hours": 0.0, "value": f["value"]})
+        return {"crew_id": crew_id, "metric": metric, "points": pts}
+    except Exception as e:
+        return _err(e)
+
+
+def get_co2_series(hours: int = 24) -> dict:
+    try:
+        con = connect(DEFAULT_DB)
+        init_db(con)
+        clock = _clock(con)["minutes"]
+        rows = con.execute("SELECT minutes, co2_mmhg FROM environment WHERE minutes BETWEEN ? AND ? ORDER BY minutes",
+                           (clock - hours * 60, clock)).fetchall()
+        f = con.execute("SELECT value, from_minutes FROM injected WHERE crew_id IS NULL AND metric='co2_mmhg' "
+                        "ORDER BY from_minutes DESC LIMIT 1").fetchone()
+        pts = [{"hours": round((r["minutes"] - clock) / 60, 2),
+                "value": f["value"] if f and r["minutes"] >= f["from_minutes"] else r["co2_mmhg"]} for r in rows]
+        if f and f["from_minutes"] <= clock and (not pts or pts[-1]["hours"] != 0.0):
+            pts.append({"hours": 0.0, "value": f["value"]})
+        return {"points": pts, "limit_mmhg": CO2_LIMIT_MMHG}
+    except Exception as e:
+        return _err(e)
+
+
+# ---------------------------------------------------------------- comms log + Bento status (voice loop <-> dashboard)
+def log_conversation(speaker: str, text: str, crew_id: str | None = None, kind: str = "") -> dict:
+    try:
+        con = connect(DEFAULT_DB)
+        init_db(con)
+        clock = _clock(con) or {"mission_day": None, "time": None}
+        con.execute("INSERT INTO conversation (at, mission_day, time, speaker, crew_id, text, kind) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (_time.time(), clock["mission_day"], clock["time"], speaker, crew_id, text, kind))
+        con.commit()
+        return {"ok": True}
+    except Exception as e:
+        return _err(e)
+
+
+def get_conversation(limit: int = 14) -> dict:
+    try:
+        con = connect(DEFAULT_DB)
+        init_db(con)
+        rows = con.execute("SELECT * FROM conversation ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        return {"lines": [dict(r) for r in reversed(rows)]}
+    except Exception as e:
+        return _err(e)
+
+
+def _set_meta(key: str, value: str) -> None:
+    con = connect(DEFAULT_DB)
+    con.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, value))
+    con.commit()
+    con.close()
+
+
+def _get_meta(key: str):
+    row = connect(DEFAULT_DB).execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+    return None if row is None else row["value"]
+
+
+def set_status(state: str) -> dict:
+    # ready / listening / thinking / speaking, written by the voice loop
+    try:
+        _set_meta("bento_state", state)
+        _set_meta("bento_heartbeat", str(_time.time()))
+        return {"ok": True}
+    except Exception as e:
+        return _err(e)
+
+
+def heartbeat() -> dict:
+    try:
+        _set_meta("bento_heartbeat", str(_time.time()))
+        return {"ok": True}
+    except Exception as e:
+        return _err(e)
+
+
+def get_status() -> dict:
+    # online = the voice loop has checked in within the last 10 seconds
+    try:
+        beat = float(_get_meta("bento_heartbeat") or 0)
+        return {"state": _get_meta("bento_state") or "offline", "online": _time.time() - beat < 10}
+    except Exception as e:
+        return _err(e)
+
+
+def request_talk(action: str) -> dict:
+    # the dashboard's Talk / Stop button; the voice loop picks it up with take_talk_request()
+    try:
+        _set_meta("ptt", action)
+        return {"ok": True}
+    except Exception as e:
+        return _err(e)
+
+
+def take_talk_request() -> dict:
+    try:
+        req = _get_meta("ptt") or ""
+        if req:
+            con = connect(DEFAULT_DB)
+            con.execute("DELETE FROM meta WHERE key='ptt'")
+            con.commit()
+            con.close()
+        return {"request": req}
     except Exception as e:
         return _err(e)
